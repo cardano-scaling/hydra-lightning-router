@@ -1,0 +1,32 @@
+name: "Devour Flake"
+
+on:
+  merge_group:
+  pull_request:
+  push:
+    branches:
+    - master
+
+
+permissions:
+  checks: write
+  pull-requests: write
+
+jobs:
+  devour-flake:
+    name: "Devour Flake"
+    runs-on: ubuntu-latest
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+
+    - name: ❄ Setup Nix/Cachix
+      uses: ./.github/actions/nix-cachix-setup
+      with:
+        authToken: '${{ secrets.CACHIX_CARDANO_SCALING_AUTH_TOKEN }}'
+
+    - name: ❄ Devour Flake
+      run: |
+        nix build github:srid/devour-flake \
+          -L --no-link --print-out-paths \
+          --override-input flake .

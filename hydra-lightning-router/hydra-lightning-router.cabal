@@ -1,0 +1,45 @@
+cabal-version:      3.8
+name:               hydra-lightning-router
+version:            0.1.0.0
+synopsis:           Short description of your package
+description:        Please see the README at <url>
+category:           <category>
+author:             <author>
+maintainer:         <email>
+copyright:          <author> 2025
+license:            BSD-3-Clause
+license-file:       LICENSE
+build-type:         Simple
+extra-source-files:
+  ChangeLog.md
+  README.md
+
+source-repository head
+  type:     git
+  location: <url>
+
+common lang
+  build-depends:    base >=4.20 && <5
+  default-language: GHC2021
+  ghc-options:
+    -Weverything -Wno-all-missed-specialisations -Wno-implicit-prelude
+    -Wno-missing-safe-haskell-mode -Wno-prepositive-qualified-module
+    -Wno-safe -Wno-unsafe
+
+library
+  import:          lang
+  exposed-modules: Lib
+  hs-source-dirs:  src
+
+executable hydra-lightning-router
+  import:         lang
+  main-is:        Main.hs
+  hs-source-dirs: app
+  build-depends:  hydra-lightning-router
+
+test-suite hydra-lightning-router-tests
+  import:         lang
+  type:           exitcode-stdio-1.0
+  main-is:        Main.hs
+  hs-source-dirs: test
+  build-depends:  hydra-lightning-router
