@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Lib qualified (main)
+import Hydra.HTLC.Embed (htlcValidatorScript)
 
 main :: IO ()
-main = Lib.main
+main = print htlcValidatorScript

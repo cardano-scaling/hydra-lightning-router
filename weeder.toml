@@ -1,0 +1,8 @@
+roots = [
+   "^Main.main$"
+ , "^Spec.main$"
+ , "^Paths_.*"
+ ]
+
+root-instances = [
+]

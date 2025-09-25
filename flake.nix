@@ -3,8 +3,9 @@
 
   inputs = {
     cardano-node.url = "github:IntersectMBO/cardano-node/10.4.1";
+    files.url = "github:mightyiam/files";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    horizon.url = "git+https://gitlab.horizon-haskell.net/package-sets/horizon-plutus";
+    horizon.url = "git+https://gitlab.horizon-haskell.net/package-sets/horizon-cardano";
     htlc.url = "github:cardano-scaling/htlc";
     hydra-coding-standards = {
       url = "github:cardano-scaling/hydra-coding-standards/0.7.0";
