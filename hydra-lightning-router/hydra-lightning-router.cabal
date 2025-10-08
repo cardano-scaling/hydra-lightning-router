@@ -30,7 +30,10 @@ common lang
 
 library
   import:          lang
-  exposed-modules: Hydra.HTLC.Embed
+  exposed-modules:
+    Hydra.HTLC.Address
+    Hydra.HTLC.Embed
+
   hs-source-dirs:  src
   build-depends:
     , aeson

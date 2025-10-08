@@ -22,8 +22,8 @@ plutusJSON =
         path <- makeRelativeToProject "./plutus.json"
         bs <- runIO $ BS.readFile path
         case Aeson.decodeStrict bs of
-          Nothing -> fail "Invalid plutus.json file."
-          Just (value :: Aeson.Value) -> lift value
+            Nothing -> fail "Invalid plutus.json file."
+            Just (value :: Aeson.Value) -> lift value
      )
 
 htlcValidatorScript :: PlutusScript PlutusScriptV3
