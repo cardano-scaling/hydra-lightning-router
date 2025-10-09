@@ -26,12 +26,16 @@ common lang
     -Wno-missing-safe-haskell-mode -Wno-prepositive-qualified-module
     -Wno-safe -Wno-unsafe
 
-  default-extensions: ImportQualifiedPost
+  default-extensions:
+    DerivingStrategies
+    ImportQualifiedPost
+    ViewPatterns
 
 library
   import:          lang
   exposed-modules:
     Hydra.HTLC.Address
+    Hydra.HTLC.Data
     Hydra.HTLC.Embed
 
   hs-source-dirs:  src
@@ -43,6 +47,8 @@ library
     , file-embed
     , lens
     , lens-aeson
+    , plutus-ledger-api
+    , plutus-tx
     , template-haskell
     , text
 
