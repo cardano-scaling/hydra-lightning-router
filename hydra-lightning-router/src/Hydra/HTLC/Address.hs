@@ -2,7 +2,17 @@ module Hydra.HTLC.Address (
     makeHtlcScriptAddress,
 ) where
 
-import Cardano.Api (AddressInEra, NetworkId, PaymentCredential (PaymentCredentialByScript), Script (PlutusScript), ShelleyBasedEra, StakeAddressReference (NoStakeAddress), hashScript, makeShelleyAddressInEra, plutusScriptVersion)
+import Cardano.Api (
+    AddressInEra,
+    NetworkId,
+    PaymentCredential (PaymentCredentialByScript),
+    Script (PlutusScript),
+    ShelleyBasedEra,
+    StakeAddressReference (NoStakeAddress),
+    hashScript,
+    makeShelleyAddressInEra,
+    plutusScriptVersion,
+ )
 import Hydra.HTLC.Embed (htlcValidatorScript)
 
 makeHtlcScriptAddress ::
