@@ -3,8 +3,7 @@
 
 module Hydra.HTLC.Embed (plutusJSON, htlcValidatorScript) where
 
-import Cardano.Api (PlutusScript, PlutusScriptV3)
-import Cardano.Api.Shelley (PlutusScript (PlutusScriptSerialised))
+import Cardano.Api (PlutusScript (PlutusScriptSerialised), PlutusScriptV3)
 import Control.Lens ((^.))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens (key, nth, _String)

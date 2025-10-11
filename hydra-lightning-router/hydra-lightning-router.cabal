@@ -37,6 +37,7 @@ library
     Hydra.HTLC.Address
     Hydra.HTLC.Data
     Hydra.HTLC.Embed
+    Hydra.HTLC.Tx
 
   hs-source-dirs:  src
   build-depends:
