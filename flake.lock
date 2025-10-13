@@ -2665,11 +2665,11 @@
         "nixpkgs": "nixpkgs_9"
       },
       "locked": {
-        "lastModified": 1760105981,
-        "narHash": "sha256-/VwyT0g+hMNK+5Km5Kmg0SoU9/WofvqrSBU4YKHnZLo=",
+        "lastModified": 1760369956,
+        "narHash": "sha256-cv0aeoKcqmZPm+DVK56ajbul8aI/MEyeqm52s/Et0sY=",
         "ref": "refs/heads/master",
-        "rev": "48af71b38376342fef4a9449acc98aa4feb855be",
-        "revCount": 80,
+        "rev": "35f31a8c3b1aed60ab586fc2df05e5c1f69e6ad9",
+        "revCount": 87,
         "type": "git",
         "url": "https://gitlab.horizon-haskell.net/package-sets/horizon-cardano"
       },
@@ -2685,11 +2685,11 @@
         "nixpkgs": "nixpkgs_5"
       },
       "locked": {
-        "lastModified": 1760012602,
-        "narHash": "sha256-iHrXt28DmL8EI2QtvI4xFILD+T5rmlt9ik+uBevd63A=",
+        "lastModified": 1760366107,
+        "narHash": "sha256-+OfJL/L5pgmG0gvST0mi3Z9eKPqS8hphlLsDiA/v4Uk=",
         "ref": "lts/ghc-9.6.x",
-        "rev": "7c1481ee445dbdfe8731bc7baaad0b9f5eb6c746",
-        "revCount": 178,
+        "rev": "f3292f7c0318167c93fca4df2c0a91d9e9c2dd2e",
+        "revCount": 184,
         "type": "git",
         "url": "https://gitlab.horizon-haskell.net/package-sets/horizon-advance"
       },
@@ -2727,11 +2727,11 @@
         "nixpkgs": "nixpkgs_4"
       },
       "locked": {
-        "lastModified": 1760007376,
-        "narHash": "sha256-48HprFOEHtL449XmTAPTCXNjS6uHmnRjy381RAaki5k=",
+        "lastModified": 1760365309,
+        "narHash": "sha256-wpcW4sargO4ugu4ZjevwV3lK0hqfER++Aul2m8vv4rE=",
         "ref": "lts/ghc-9.6.x",
-        "rev": "b112068b1b06f3956fd376e96aafc384a7562fbb",
-        "revCount": 1268,
+        "rev": "86847074ffc467d5c0be5baf3cd3cea59c811bf9",
+        "revCount": 1274,
         "type": "git",
         "url": "https://gitlab.horizon-haskell.net/package-sets/horizon-core"
       },
@@ -2855,11 +2855,11 @@
         "nixpkgs-libR": "nixpkgs-libR"
       },
       "locked": {
-        "lastModified": 1760017330,
-        "narHash": "sha256-mtStMNwb3xPy61e0ThOXBh++rrM+DS7WNg/phDmGbfQ=",
+        "lastModified": 1760366984,
+        "narHash": "sha256-Fe7I30MFF6/1AIcw9QnMKYLpZdwVmrW4whjTVBbMnok=",
         "ref": "refs/heads/master",
-        "rev": "f276a5a4947cc247ed8110d8f325a79f809f9020",
-        "revCount": 503,
+        "rev": "b493bfd958dd9b8f2e2880d99280d311a8f101db",
+        "revCount": 513,
         "type": "git",
         "url": "https://gitlab.horizon-haskell.net/package-sets/horizon-plutus"
       },
@@ -5251,11 +5251,11 @@
     },
     "nixpkgs_46": {
       "locked": {
-        "lastModified": 1759994382,
-        "narHash": "sha256-wSK+3UkalDZRVHGCRikZ//CyZUJWDJkBDTQX1+G77Ow=",
+        "lastModified": 1760139962,
+        "narHash": "sha256-4xggC56Rub3WInz5eD7EZWXuLXpNvJiUPahGtMkwtuc=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "5da4a26309e796daa7ffca72df93dbe53b8164c7",
+        "rev": "7e297ddff44a3cc93673bb38d0374df8d0ad73e4",
         "type": "github"
       },
       "original": {
@@ -5283,11 +5283,11 @@
     },
     "nixpkgs_5": {
       "locked": {
-        "lastModified": 1759831965,
-        "narHash": "sha256-vgPm2xjOmKdZ0xKA6yLXPJpjOtQPHfaZDRtH+47XEBo=",
+        "lastModified": 1760038930,
+        "narHash": "sha256-Oncbh0UmHjSlxO7ErQDM3KM0A5/Znfofj2BSzlHLeVw=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "c9b6fb798541223bbb396d287d16f43520250518",
+        "rev": "0b4defa2584313f3b781240b29d61f6f9f7e0df3",
         "type": "github"
       },
       "original": {
@@ -5315,11 +5315,11 @@
     },
     "nixpkgs_7": {
       "locked": {
-        "lastModified": 1759831965,
-        "narHash": "sha256-vgPm2xjOmKdZ0xKA6yLXPJpjOtQPHfaZDRtH+47XEBo=",
+        "lastModified": 1760038930,
+        "narHash": "sha256-Oncbh0UmHjSlxO7ErQDM3KM0A5/Znfofj2BSzlHLeVw=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "c9b6fb798541223bbb396d287d16f43520250518",
+        "rev": "0b4defa2584313f3b781240b29d61f6f9f7e0df3",
         "type": "github"
       },
       "original": {
@@ -5347,11 +5347,11 @@
     },
     "nixpkgs_9": {
       "locked": {
-        "lastModified": 1759977445,
-        "narHash": "sha256-LYr4IDfuihCkFAkSYz5//gT2r1ewcWBYgd5AxPzPLIo=",
+        "lastModified": 1760256791,
+        "narHash": "sha256-uTpzDHRASEDeFUuToWSQ46Re8beXyG9dx4W36FQa0/c=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "2dad7af78a183b6c486702c18af8a9544f298377",
+        "rev": "832e3b6db48508ae436c2c7bfc0cf914eac6938e",
         "type": "github"
       },
       "original": {
@@ -6160,11 +6160,11 @@
         "nixpkgs": "nixpkgs_47"
       },
       "locked": {
-        "lastModified": 1758728421,
-        "narHash": "sha256-ySNJ008muQAds2JemiyrWYbwbG+V7S5wg3ZVKGHSFu8=",
+        "lastModified": 1760120816,
+        "narHash": "sha256-gq9rdocpmRZCwLS5vsHozwB6b5nrOBDNc2kkEaTXHfg=",
         "owner": "numtide",
         "repo": "treefmt-nix",
-        "rev": "5eda4ee8121f97b218f7cc73f5172098d458f1d1",
+        "rev": "761ae7aff00907b607125b2f57338b74177697ed",
         "type": "github"
       },
       "original": {
