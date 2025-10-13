@@ -29,6 +29,7 @@ common lang
   default-extensions:
     DerivingStrategies
     ImportQualifiedPost
+    TypeData
     ViewPatterns
 
 library
@@ -38,6 +39,7 @@ library
     Hydra.HTLC.Data
     Hydra.HTLC.Embed
     Hydra.HTLC.Tx
+    Hydra.Lightning.Scenario
 
   hs-source-dirs:  src
   build-depends:
@@ -52,6 +54,7 @@ library
     , plutus-tx
     , template-haskell
     , text
+    , websockets
 
 executable hydra-lightning-router
   import:         lang

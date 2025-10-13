@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Hydra.HTLC.Embed (htlcValidatorScript)
+import Hydra.Lightning.Scenario qualified
 
 main :: IO ()
-main = print htlcValidatorScript
+main = Hydra.Lightning.Scenario.main

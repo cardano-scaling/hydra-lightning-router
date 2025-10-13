@@ -54,14 +54,11 @@
                     --listen 127.0.0.1:5001 \
                     --api-port 4001 \
                     --monitoring-port 6001 \
-                    --peer 127.0.0.1:5002 \
                     --peer 127.0.0.1:5003 \
                     --hydra-signing-key "${inputs.hydra}/demo/alice.sk" \
-                    --hydra-verification-key "${inputs.hydra}/demo/bob.vk" \
                     --hydra-verification-key "${inputs.hydra}/demo/carol.vk" \
                     --hydra-scripts-tx-id ''$HYDRA_SCRIPTS_TX_ID \
                     --cardano-signing-key devnet/credentials/alice.sk \
-                    --cardano-verification-key devnet/credentials/bob.vk \
                     --cardano-verification-key devnet/credentials/carol.vk \
                     --ledger-protocol-parameters devnet/protocol-parameters.json \
                     --testnet-magic 42 \
@@ -87,14 +84,11 @@
                   --listen 127.0.0.1:5002 \
                   --api-port 4002 \
                   --monitoring-port 6002 \
-                  --peer 127.0.0.1:5001 \
-                  --peer 127.0.0.1:5003 \
+                  --peer 127.0.0.1:5004 \
                   --hydra-signing-key ${inputs.hydra}/demo/bob.sk \
-                  --hydra-verification-key ${inputs.hydra}/demo/alice.vk \
                   --hydra-verification-key ${inputs.hydra}/demo/carol.vk \
                   --hydra-scripts-tx-id ''$HYDRA_SCRIPTS_TX_ID \
                   --cardano-signing-key devnet/credentials/bob.sk \
-                  --cardano-verification-key devnet/credentials/alice.vk \
                   --cardano-verification-key devnet/credentials/carol.vk \
                   --ledger-protocol-parameters devnet/protocol-parameters.json \
                   --testnet-magic 42 \
@@ -107,10 +101,10 @@
               ready_log_line = "NodeIsLeader";
               depends_on."seed-devnet".condition = "process_completed";
             };
-            hydra-node-carol = {
-              log_location = "./devnet/carol-logs.txt";
+            hydra-node-carol-1 = {
+              log_location = "./devnet/carol-logs-1.txt";
               command = pkgs.writeShellApplication {
-                name = "hydra-node-carol";
+                name = "hydra-node-carol-1";
                 checkPhase = "";
                 text = ''
                   set -a; [ -f .env ] && source .env; set +a
@@ -120,18 +114,44 @@
                   --api-port 4003 \
                   --monitoring-port 6003 \
                   --peer 127.0.0.1:5001 \
-                  --peer 127.0.0.1:5002 \
                   --hydra-signing-key ${inputs.hydra}/demo/carol.sk \
                   --hydra-verification-key ${inputs.hydra}/demo/alice.vk \
-                  --hydra-verification-key ${inputs.hydra}/demo/bob.vk \
                   --hydra-scripts-tx-id ''$HYDRA_SCRIPTS_TX_ID \
                   --cardano-signing-key devnet/credentials/carol.sk \
                   --cardano-verification-key devnet/credentials/alice.vk \
+                  --ledger-protocol-parameters devnet/protocol-parameters.json \
+                  --testnet-magic 42 \
+                  --node-socket devnet/node.socket \
+                  --persistence-dir devnet/persistence/carol-1 \
+                  --contestation-period 3s
+                '';
+              };
+              working_dir = ".";
+              ready_log_line = "NodeIsLeader";
+              depends_on."seed-devnet".condition = "process_completed";
+            };
+            hydra-node-carol-2 = {
+              log_location = "./devnet/carol-logs-2.txt";
+              command = pkgs.writeShellApplication {
+                name = "hydra-node-carol-2";
+                checkPhase = "";
+                text = ''
+                  set -a; [ -f .env ] && source .env; set +a
+                  ${pkgs.hydra-node}/bin/hydra-node \
+                  --node-id 3 \
+                  --listen 127.0.0.1:5004 \
+                  --api-port 4004 \
+                  --monitoring-port 6004 \
+                  --peer 127.0.0.1:5002 \
+                  --hydra-signing-key ${inputs.hydra}/demo/carol.sk \
+                  --hydra-verification-key ${inputs.hydra}/demo/bob.vk \
+                  --hydra-scripts-tx-id ''$HYDRA_SCRIPTS_TX_ID \
+                  --cardano-signing-key devnet/credentials/carol.sk \
                   --cardano-verification-key devnet/credentials/bob.vk \
                   --ledger-protocol-parameters devnet/protocol-parameters.json \
                   --testnet-magic 42 \
                   --node-socket devnet/node.socket \
-                  --persistence-dir devnet/persistence/carol \
+                  --persistence-dir devnet/persistence/carol-2 \
                   --contestation-period 3s
                 '';
               };
@@ -163,7 +183,7 @@
               is_foreground = true;
               depends_on."hydra-node-bob".condition = "process_started";
             };
-            hydra-tui-carol = {
+            hydra-tui-carol-1 = {
               working_dir = "./demo";
               command = ''
                 ${pkgs.hydra-tui}/bin/hydra-tui \
@@ -173,7 +193,19 @@
                   --cardano-signing-key devnet/credentials/carol-funds.sk
               '';
               is_foreground = true;
-              depends_on."hydra-node-carol".condition = "process_started";
+              depends_on."hydra-node-carol-1".condition = "process_started";
+            };
+            hydra-tui-carol-2 = {
+              working_dir = "./demo";
+              command = ''
+                ${pkgs.hydra-tui}/bin/hydra-tui \
+                  --connect 0.0.0.0:4004 \
+                  --node-socket devnet/node.socket \
+                  --testnet-magic 42 \
+                  --cardano-signing-key devnet/credentials/carol-funds.sk
+              '';
+              is_foreground = true;
+              depends_on."hydra-node-carol-2".condition = "process_started";
             };
           };
         };
