@@ -8,7 +8,7 @@
     horizon.url = "git+https://gitlab.horizon-haskell.net/package-sets/horizon-cardano";
     htlc.url = "github:cardano-scaling/htlc";
     hydra-coding-standards = {
-      url = "github:cardano-scaling/hydra-coding-standards/0.7.0";
+      url = "github:cardano-scaling/hydra-coding-standards/0.7.1";
       inputs.treefmt-nix.follows = "treefmt-nix";
     };
     hydra.url = "github:cardano-scaling/hydra/0.22.4";

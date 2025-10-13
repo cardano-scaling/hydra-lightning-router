@@ -1,6 +1,6 @@
-module Hydra.Lightning.Scenario (
-  main,
-)
+module Hydra.Lightning.Scenario
+  ( main,
+  )
 where
 
 import Network.WebSockets (receiveDataMessage, runClient)

@@ -1,9 +1,10 @@
-module Hydra.HTLC.Address (
-    makeHtlcScriptAddress,
-) where
+module Hydra.HTLC.Address
+  ( makeHtlcScriptAddress,
+  )
+where
 
-import Cardano.Api (
-    AddressInEra,
+import Cardano.Api
+  ( AddressInEra,
     NetworkId,
     PaymentCredential (PaymentCredentialByScript),
     Script (PlutusScript),
@@ -12,16 +13,16 @@ import Cardano.Api (
     hashScript,
     makeShelleyAddressInEra,
     plutusScriptVersion,
- )
+  )
 import Hydra.HTLC.Embed (htlcValidatorScript)
 
 makeHtlcScriptAddress ::
-    ShelleyBasedEra era ->
-    NetworkId ->
-    AddressInEra era
+  ShelleyBasedEra era ->
+  NetworkId ->
+  AddressInEra era
 makeHtlcScriptAddress sbe networkId =
-    makeShelleyAddressInEra
-        sbe
-        networkId
-        (PaymentCredentialByScript $ hashScript $ PlutusScript plutusScriptVersion htlcValidatorScript)
-        NoStakeAddress
+  makeShelleyAddressInEra
+    sbe
+    networkId
+    (PaymentCredentialByScript $ hashScript $ PlutusScript plutusScriptVersion htlcValidatorScript)
+    NoStakeAddress

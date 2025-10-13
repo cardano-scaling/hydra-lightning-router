@@ -3,7 +3,10 @@
 
 module Hydra.HTLC.Embed (plutusJSON, htlcValidatorScript) where
 
-import Cardano.Api (PlutusScript (PlutusScriptSerialised), PlutusScriptV3)
+import Cardano.Api
+  ( PlutusScript (PlutusScriptSerialised),
+    PlutusScriptV3,
+  )
 import Control.Lens ((^.))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens (key, nth, _String)
@@ -17,15 +20,15 @@ import Language.Haskell.TH.Syntax (lift)
 
 plutusJSON :: Aeson.Value
 plutusJSON =
-    $( do
-        path <- makeRelativeToProject "./plutus.json"
-        bs <- runIO $ BS.readFile path
-        case Aeson.decodeStrict bs of
-            Nothing -> fail "Invalid plutus.json file."
-            Just (value :: Aeson.Value) -> lift value
-     )
+  $( do
+       path <- makeRelativeToProject "./plutus.json"
+       bs <- runIO $ BS.readFile path
+       case Aeson.decodeStrict bs of
+         Nothing -> fail "Invalid plutus.json file."
+         Just (value :: Aeson.Value) -> lift value
+   )
 
 htlcValidatorScript :: PlutusScript PlutusScriptV3
 htlcValidatorScript =
-    PlutusScriptSerialised . toShort . Base16.decodeLenient . encodeUtf8 $
-        plutusJSON ^. key "validators" . nth 0 . key "compiledCode" . _String
+  PlutusScriptSerialised . toShort . Base16.decodeLenient . encodeUtf8 $
+    plutusJSON ^. key "validators" . nth 0 . key "compiledCode" . _String

@@ -1,7 +1,8 @@
-module Hydra.HTLC.Tx (
-  makeHTLCLockupTxOut,
-  constructBalancedHTLCLockupTx,
-) where
+module Hydra.HTLC.Tx
+  ( makeHTLCLockupTxOut,
+    constructBalancedHTLCLockupTx,
+  )
+where
 
 import Cardano.Api qualified as Api
 import Cardano.Api.ProtocolParameters (LedgerProtocolParameters)

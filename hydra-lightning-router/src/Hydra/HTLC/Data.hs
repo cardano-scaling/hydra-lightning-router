@@ -1,9 +1,9 @@
 {-# LANGUAGE TemplateHaskell #-}
 
-module Hydra.HTLC.Data (
-    Datum (Datum),
+module Hydra.HTLC.Data
+  ( Datum (Datum),
     Redeemer (Claim, Refund),
-)
+  )
 where
 
 import Data.Kind (Type)
@@ -14,19 +14,19 @@ import Prelude qualified as Haskell
 
 type Datum :: Type
 data Datum
-    = Datum
-    { hash :: BuiltinByteString
-    , timeout :: V3.POSIXTime
-    , sender :: BuiltinByteString
-    , receiver :: BuiltinByteString
-    }
-    deriving stock (Haskell.Eq, Haskell.Show, Haskell.Ord)
+  = Datum
+  { hash :: BuiltinByteString,
+    timeout :: V3.POSIXTime,
+    sender :: BuiltinByteString,
+    receiver :: BuiltinByteString
+  }
+  deriving stock (Haskell.Eq, Haskell.Show, Haskell.Ord)
 
 PlutusTx.unstableMakeIsData ''Datum
 
 type Redeemer :: Type
 data Redeemer
-    = Claim BuiltinByteString
-    | Refund
+  = Claim BuiltinByteString
+  | Refund
 
 PlutusTx.unstableMakeIsData ''Redeemer

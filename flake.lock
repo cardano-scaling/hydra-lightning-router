@@ -2665,11 +2665,11 @@
         "nixpkgs": "nixpkgs_9"
       },
       "locked": {
-        "lastModified": 1760369956,
-        "narHash": "sha256-cv0aeoKcqmZPm+DVK56ajbul8aI/MEyeqm52s/Et0sY=",
+        "lastModified": 1760374655,
+        "narHash": "sha256-3UVkYI01utHn584KUHAT95TNqH9kFIS4wGJGZoAWVhI=",
         "ref": "refs/heads/master",
-        "rev": "35f31a8c3b1aed60ab586fc2df05e5c1f69e6ad9",
-        "revCount": 87,
+        "rev": "9e26435ecc16367d3db456faaa0fa4b5cce16205",
+        "revCount": 89,
         "type": "git",
         "url": "https://gitlab.horizon-haskell.net/package-sets/horizon-cardano"
       },
@@ -3042,16 +3042,16 @@
         "werrorwolf": "werrorwolf_3"
       },
       "locked": {
-        "lastModified": 1750411059,
-        "narHash": "sha256-RiWDyFY3twXHmb+aHwqTuxScW7caFLm9jh4c5Jae9vw=",
+        "lastModified": 1760380082,
+        "narHash": "sha256-o/Z5Ecg9Okh/jTGrT1OmtE7caUfCZQ6ic5Z7oNXJGBQ=",
         "owner": "cardano-scaling",
         "repo": "hydra-coding-standards",
-        "rev": "da05b325d0d6d79f4e68d27ec07ac4f917e7e36f",
+        "rev": "6f7d3d5425db2873e7ea51f392d54c9528fd8f56",
         "type": "github"
       },
       "original": {
         "owner": "cardano-scaling",
-        "ref": "0.7.0",
+        "ref": "0.7.1",
         "repo": "hydra-coding-standards",
         "type": "github"
       }
