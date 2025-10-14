@@ -67,3 +67,12 @@ test-suite hydra-lightning-router-tests
   type:           exitcode-stdio-1.0
   main-is:        Main.hs
   hs-source-dirs: test
+  build-depends:
+    , cardano-api
+    , convex-base
+    , convex-coin-selection
+    , convex-mockchain
+    , convex-wallet
+    , hydra-lightning-router
+    , tasty
+    , tasty-hunit
