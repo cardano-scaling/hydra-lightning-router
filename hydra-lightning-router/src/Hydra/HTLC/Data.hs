@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Hydra.HTLC.Data
-  ( Datum (Datum),
+  ( Datum (..),
     Redeemer (Claim, Refund),
   )
 where

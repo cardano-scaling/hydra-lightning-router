@@ -6,7 +6,7 @@ module Main
 where
 
 import Cardano.Api qualified as C
-import Convex.BuildTx (execBuildTx, payToScriptDatumHash, spendPlutus)
+import Convex.BuildTx (execBuildTx, payToScriptDatumHash, spendPlutus, TxBuilder)
 import Convex.Class (MonadMockchain)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
@@ -15,16 +15,36 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.Utils (failOnError, inBabbage)
 import Convex.Wallet.MockWallet qualified as Wallet
 import Hydra.HTLC.Data (Datum (Datum))
+import Hydra.HTLC.Data qualified as HTLC
 import Hydra.HTLC.Embed (htlcValidatorScript)
 import PlutusTx (ToData)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (testCase)
+import Hydra.Invoice qualified as I
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
 
 alwaysSucceedsScript :: C.PlutusScript C.PlutusScriptV1
 alwaysSucceedsScript = C.examplePlutusScriptAlwaysSucceeds C.WitCtxTxIn
+
+standardInvoiceToHTLCDatum :: I.StandardInvoice -> C.Address C.ShelleyAddr -> Datum
+standardInvoiceToHTLCDatum invoice sender
+  = Datum {
+      HTLC.hash = _ $ I.paymentId invoice,
+      HTLC.receiver = _ (I.recipient invoice),
+      HTLC.timeout = _ (I.date invoice),
+      HTLC.sender = _ sender
+    }
+
+standardInvoiceToHTLCTx :: I.StandardInvoice -> TxBuilder era
+standardInvoiceToHTLCTx invoice = execBuildTx $
+  payToScriptDatumHash
+    Defaults.networkId
+    (plutusScript htlcValidatorScript)
+    (standardInvoiceToHTLCDatum invoice)
+    C.NoStakeAddress
+    (I.amount invoice)
 
 payToPlutusScript ::
   forall era lang m a.
