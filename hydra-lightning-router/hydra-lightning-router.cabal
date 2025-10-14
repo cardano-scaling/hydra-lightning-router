@@ -38,7 +38,6 @@ library
     Hydra.HTLC.Address
     Hydra.HTLC.Data
     Hydra.HTLC.Embed
-    Hydra.HTLC.Tx
     Hydra.Lightning.Scenario
 
   hs-source-dirs:  src
