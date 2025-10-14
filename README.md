@@ -9,3 +9,10 @@ Not implemented yet.
 ```
 nix run .#demo
 ```
+
+## Smoke Tests
+
+```
+nix develop
+cabal test all
+```
