@@ -74,5 +74,6 @@ test-suite hydra-lightning-router-tests
     , convex-mockchain
     , convex-wallet
     , hydra-lightning-router
+    , plutus-tx
     , tasty
     , tasty-hunit
