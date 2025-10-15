@@ -6,8 +6,9 @@ module Main
 where
 
 import Cardano.Api qualified as C
-import Convex.BuildTx (execBuildTx, payToScriptDatumHash, spendPlutus, TxBuilder)
-import Convex.Class (MonadMockchain)
+import Cardano.Crypto.Hash qualified as Crypto
+import Convex.BuildTx (TxBuilder, execBuildTx, payToScriptDatumHash, spendPlutus)
+import Convex.Class (MonadMockchain, setPOSIXTime)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
@@ -15,22 +16,19 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.Utils (failOnError, inBabbage)
 import Convex.Wallet qualified as Wallet
 import Convex.Wallet.MockWallet qualified as Wallet
+import Data.ByteString qualified as BS
+import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, secondsToDiffTime, secondsToNominalDiffTime)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Hydra.HTLC.Data (Datum (Datum))
 import Hydra.HTLC.Data qualified as HTLC
 import Hydra.HTLC.Embed (htlcValidatorScript)
-import PlutusTx (ToData(..), toData)
-import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (testCase, Assertion)
-import Hydra.Invoice qualified as I
-
-import Cardano.Api (Address, ShelleyAddr, serialiseAddress, serialiseToRawBytes)
-import Cardano.Crypto.Hash qualified as Crypto
-import Data.ByteString qualified as BS
-import Data.Time (UTCTime(..), diffUTCTime, secondsToNominalDiffTime, fromGregorian, secondsToDiffTime)
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Hydra.Invoice (PaymentId (..), StandardInvoice (..))
+import Hydra.Invoice qualified as I
 import PlutusLedgerApi.V3 qualified as V3
+import PlutusTx (ToData (..), toData)
 import PlutusTx.Prelude (BuiltinByteString, toBuiltin)
+import Test.Tasty (TestTree, defaultMain, testGroup)
+import Test.Tasty.HUnit (Assertion, testCase)
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
@@ -38,19 +36,18 @@ plutusScript = C.PlutusScript C.plutusScriptVersion
 alwaysSucceedsScript :: C.PlutusScript C.PlutusScriptV1
 alwaysSucceedsScript = C.examplePlutusScriptAlwaysSucceeds C.WitCtxTxIn
 
--- Helper function to convert UTCTime to POSIXTime
 utcTimeToPOSIXTime :: UTCTime -> V3.POSIXTime
 utcTimeToPOSIXTime utc =
   let posixSeconds = floor $ utcTimeToPOSIXSeconds utc
-  in V3.POSIXTime posixSeconds
+   in V3.POSIXTime posixSeconds
 
 standardInvoiceToHTLCDatum :: I.StandardInvoice -> C.Address C.ShelleyAddr -> Datum
-standardInvoiceToHTLCDatum invoice sender
-  = Datum {
-      HTLC.hash = toBuiltin $ Crypto.hashToBytes $ fromPaymentId $ I.paymentId invoice,
-      HTLC.receiver = toBuiltin $ serialiseToRawBytes $ I.recipient invoice,
+standardInvoiceToHTLCDatum invoice sender =
+  Datum
+    { HTLC.hash = toBuiltin $ Crypto.hashToBytes $ fromPaymentId $ I.paymentId invoice,
+      HTLC.receiver = toBuiltin $ C.serialiseToRawBytes $ I.recipient invoice,
       HTLC.timeout = utcTimeToPOSIXTime $ I.date invoice,
-      HTLC.sender = toBuiltin $ serialiseToRawBytes sender
+      HTLC.sender = toBuiltin $ C.serialiseToRawBytes sender
     }
 
 payToPlutusScript ::
@@ -79,8 +76,8 @@ spendFromPlutusScript ::
   (C.HasScriptLanguageInEra lang era) =>
   (C.IsPlutusScriptLanguage lang) =>
   (C.IsBabbageBasedEra era) =>
-  ToData dat =>
-  ToData red =>
+  (ToData dat) =>
+  (ToData red) =>
   Wallet.Wallet ->
   C.PlutusScript lang ->
   C.TxIn ->
@@ -90,9 +87,6 @@ spendFromPlutusScript ::
 spendFromPlutusScript wallet script ref datum redeemer = inBabbage @era $ do
   let tx = execBuildTx $ spendPlutus ref script datum redeemer
   C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
-
-main :: IO ()
-main = defaultMain tests
 
 canSpendToAlwaysSucceedsScript :: Assertion
 canSpendToAlwaysSucceedsScript = mockchainSucceeds $ failOnError $ payToPlutusScript Wallet.w1 alwaysSucceedsScript () (C.lovelaceToValue 1_000_000)
@@ -115,12 +109,12 @@ canClaimFromHTLCScript :: Assertion
 canClaimFromHTLCScript = do
   let sender = Wallet.address Defaults.networkId Wallet.w1
   let recipient = Wallet.address Defaults.networkId Wallet.w2
-  let date = UTCTime (fromGregorian 2040 01 01) (secondsToDiffTime 0)
+  let date = UTCTime (fromGregorian 2026 01 01) (secondsToDiffTime 0)
   (invoice, k) <- I.generateStandardInvoice sender (C.lovelaceToValue 1_000_000) date
   let dat = standardInvoiceToHTLCDatum invoice sender
   mockchainSucceeds $ failOnError $ do
     ref <- payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
-    spendFromPlutusScript Wallet.w1 htlcValidatorScript ref () ()
+    spendFromPlutusScript Wallet.w2 htlcValidatorScript ref dat (HTLC.Claim (toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k))
 
 tests :: TestTree
 tests =
@@ -134,3 +128,6 @@ tests =
           testCase "spending a script output from htlc script" canClaimFromHTLCScript
         ]
     ]
+
+main :: IO ()
+main = defaultMain tests

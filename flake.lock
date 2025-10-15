@@ -2665,11 +2665,11 @@
         "nixpkgs": "nixpkgs_9"
       },
       "locked": {
-        "lastModified": 1760523516,
-        "narHash": "sha256-fyFhCA8MLwBi1UnYfT0qKU2VirTRWjcI3oQoyMVE3Uo=",
+        "lastModified": 1760541403,
+        "narHash": "sha256-gt0nQ7QK9Tvtwe3zSZZ9b0UEVGOIkigTsjzt1jjJSL8=",
         "ref": "refs/heads/master",
-        "rev": "d38fc1eaad31a2a44e40317302d0a0f812e9a553",
-        "revCount": 97,
+        "rev": "c0ad78c0a3579ff0915b229915465ec44f0939a4",
+        "revCount": 99,
         "type": "git",
         "url": "https://gitlab.horizon-haskell.net/package-sets/horizon-cardano"
       },

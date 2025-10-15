@@ -68,17 +68,17 @@ test-suite hydra-lightning-router-tests
   main-is:        Main.hs
   hs-source-dirs: test
   build-depends:
+    , bytestring
     , cardano-api
+    , cardano-crypto-class
     , convex-base
     , convex-coin-selection
     , convex-mockchain
     , convex-wallet
     , hydra-invoices
     , hydra-lightning-router
+    , plutus-ledger-api
     , plutus-tx
     , tasty
     , tasty-hunit
     , time
-    , bytestring
-    , cardano-crypto-class
-    , plutus-ledger-api
