@@ -78,3 +78,7 @@ test-suite hydra-lightning-router-tests
     , plutus-tx
     , tasty
     , tasty-hunit
+    , time
+    , bytestring
+    , cardano-crypto-class
+    , plutus-ledger-api

@@ -13,14 +13,24 @@ import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.Utils (failOnError, inBabbage)
+import Convex.Wallet qualified as Wallet
 import Convex.Wallet.MockWallet qualified as Wallet
 import Hydra.HTLC.Data (Datum (Datum))
 import Hydra.HTLC.Data qualified as HTLC
 import Hydra.HTLC.Embed (htlcValidatorScript)
-import PlutusTx (ToData)
+import PlutusTx (ToData(..), toData)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (testCase)
+import Test.Tasty.HUnit (testCase, Assertion)
 import Hydra.Invoice qualified as I
+
+import Cardano.Api (Address, ShelleyAddr, serialiseAddress, serialiseToRawBytes)
+import Cardano.Crypto.Hash qualified as Crypto
+import Data.ByteString qualified as BS
+import Data.Time (UTCTime(..), diffUTCTime, secondsToNominalDiffTime, fromGregorian, secondsToDiffTime)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
+import Hydra.Invoice (PaymentId (..), StandardInvoice (..))
+import PlutusLedgerApi.V3 qualified as V3
+import PlutusTx.Prelude (BuiltinByteString, toBuiltin)
 
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
@@ -28,23 +38,20 @@ plutusScript = C.PlutusScript C.plutusScriptVersion
 alwaysSucceedsScript :: C.PlutusScript C.PlutusScriptV1
 alwaysSucceedsScript = C.examplePlutusScriptAlwaysSucceeds C.WitCtxTxIn
 
+-- Helper function to convert UTCTime to POSIXTime
+utcTimeToPOSIXTime :: UTCTime -> V3.POSIXTime
+utcTimeToPOSIXTime utc =
+  let posixSeconds = floor $ utcTimeToPOSIXSeconds utc
+  in V3.POSIXTime posixSeconds
+
 standardInvoiceToHTLCDatum :: I.StandardInvoice -> C.Address C.ShelleyAddr -> Datum
 standardInvoiceToHTLCDatum invoice sender
   = Datum {
-      HTLC.hash = _ $ I.paymentId invoice,
-      HTLC.receiver = _ (I.recipient invoice),
-      HTLC.timeout = _ (I.date invoice),
-      HTLC.sender = _ sender
+      HTLC.hash = toBuiltin $ Crypto.hashToBytes $ fromPaymentId $ I.paymentId invoice,
+      HTLC.receiver = toBuiltin $ serialiseToRawBytes $ I.recipient invoice,
+      HTLC.timeout = utcTimeToPOSIXTime $ I.date invoice,
+      HTLC.sender = toBuiltin $ serialiseToRawBytes sender
     }
-
-standardInvoiceToHTLCTx :: I.StandardInvoice -> TxBuilder era
-standardInvoiceToHTLCTx invoice = execBuildTx $
-  payToScriptDatumHash
-    Defaults.networkId
-    (plutusScript htlcValidatorScript)
-    (standardInvoiceToHTLCDatum invoice)
-    C.NoStakeAddress
-    (I.amount invoice)
 
 payToPlutusScript ::
   forall era lang m a.
@@ -54,34 +61,66 @@ payToPlutusScript ::
   (MonadMockchain era m) =>
   (C.IsBabbageBasedEra era) =>
   (ToData a) =>
+  Wallet.Wallet ->
   C.PlutusScript lang ->
   a ->
+  C.Value ->
   m C.TxIn
-payToPlutusScript script datum = inBabbage @era $ do
-  let tx = execBuildTx $ payToScriptDatumHash Defaults.networkId (plutusScript script) datum C.NoStakeAddress (C.lovelaceToValue 10_000_000)
-  i <- C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty Wallet.w1 tx TrailingChange []
+payToPlutusScript wallet script datum value = inBabbage @era $ do
+  let tx = execBuildTx $ payToScriptDatumHash Defaults.networkId (plutusScript script) datum C.NoStakeAddress value
+  i <- C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
   pure (C.TxIn i (C.TxIx 0))
 
 spendFromPlutusScript ::
-  forall era lang m.
+  forall era lang m dat red.
   (MonadFail m) =>
   (MonadMockchain era m) =>
   (C.MonadError (BalanceTxError era) m) =>
   (C.HasScriptLanguageInEra lang era) =>
   (C.IsPlutusScriptLanguage lang) =>
   (C.IsBabbageBasedEra era) =>
+  ToData dat =>
+  ToData red =>
+  Wallet.Wallet ->
   C.PlutusScript lang ->
   C.TxIn ->
+  dat ->
+  red ->
   m C.TxId
-spendFromPlutusScript script ref = inBabbage @era $ do
-  let tx = execBuildTx $ spendPlutus ref script () ()
-  C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty Wallet.w1 tx TrailingChange []
+spendFromPlutusScript wallet script ref datum redeemer = inBabbage @era $ do
+  let tx = execBuildTx $ spendPlutus ref script datum redeemer
+  C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
 
 main :: IO ()
 main = defaultMain tests
 
-mockDatum :: Datum
-mockDatum = Datum "0000000000" 0 "foo" "bar"
+canSpendToAlwaysSucceedsScript :: Assertion
+canSpendToAlwaysSucceedsScript = mockchainSucceeds $ failOnError $ payToPlutusScript Wallet.w1 alwaysSucceedsScript () (C.lovelaceToValue 1_000_000)
+
+canSpendFromAlwaysSucceedsScript :: Assertion
+canSpendFromAlwaysSucceedsScript = mockchainSucceeds $ failOnError $ do
+  ref <- payToPlutusScript Wallet.w1 alwaysSucceedsScript () (C.lovelaceToValue 1_000_000)
+  spendFromPlutusScript Wallet.w1 alwaysSucceedsScript ref () ()
+
+canSpendToHTLCScript :: Assertion
+canSpendToHTLCScript = do
+  let sender = Wallet.address Defaults.networkId Wallet.w1
+  let recipient = Wallet.address Defaults.networkId Wallet.w2
+  let date = UTCTime (fromGregorian 2040 01 01) (secondsToDiffTime 0)
+  (invoice, k) <- I.generateStandardInvoice sender (C.lovelaceToValue 1_000_000) date
+  let dat = standardInvoiceToHTLCDatum invoice sender
+  mockchainSucceeds $ failOnError $ payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
+
+canClaimFromHTLCScript :: Assertion
+canClaimFromHTLCScript = do
+  let sender = Wallet.address Defaults.networkId Wallet.w1
+  let recipient = Wallet.address Defaults.networkId Wallet.w2
+  let date = UTCTime (fromGregorian 2040 01 01) (secondsToDiffTime 0)
+  (invoice, k) <- I.generateStandardInvoice sender (C.lovelaceToValue 1_000_000) date
+  let dat = standardInvoiceToHTLCDatum invoice sender
+  mockchainSucceeds $ failOnError $ do
+    ref <- payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
+    spendFromPlutusScript Wallet.w1 htlcValidatorScript ref () ()
 
 tests :: TestTree
 tests =
@@ -89,9 +128,9 @@ tests =
     "unit tests"
     [ testGroup
         "payments"
-        [ testCase "spending a public key output to alwaysSucceeds script" (mockchainSucceeds $ failOnError $ payToPlutusScript alwaysSucceedsScript ()),
-          testCase "spending a script output from alwaysSucceeds script" (mockchainSucceeds $ failOnError (payToPlutusScript alwaysSucceedsScript () >>= spendFromPlutusScript alwaysSucceedsScript)),
-          testCase "spending a public key output to htlc script" (mockchainSucceeds $ failOnError $ payToPlutusScript htlcValidatorScript ()),
-          testCase "spending a script output from htlc script" (mockchainSucceeds $ failOnError (payToPlutusScript htlcValidatorScript mockDatum >>= spendFromPlutusScript htlcValidatorScript))
+        [ testCase "spending a public key output to alwaysSucceeds script" canSpendToAlwaysSucceedsScript,
+          testCase "spending a script output from alwaysSucceeds script" canSpendFromAlwaysSucceedsScript,
+          testCase "spending a public key output to htlc script" canSpendToHTLCScript,
+          testCase "spending a script output from htlc script" canClaimFromHTLCScript
         ]
     ]
