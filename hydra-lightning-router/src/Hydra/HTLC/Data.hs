@@ -17,8 +17,8 @@ data Datum
   = Datum
   { hash :: BuiltinByteString,
     timeout :: V3.POSIXTime,
-    sender :: BuiltinByteString,
-    receiver :: BuiltinByteString
+    sender :: V3.PubKeyHash,
+    receiver :: V3.PubKeyHash
   }
   deriving stock (Haskell.Eq, Haskell.Show, Haskell.Ord)
 

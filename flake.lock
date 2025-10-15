@@ -2942,11 +2942,11 @@
         "nixpkgs": "nixpkgs_19"
       },
       "locked": {
-        "lastModified": 1756840509,
-        "narHash": "sha256-eapob2bIOZfWpv4hR5XEl/phgs07YNnOxwIJjA1hfjQ=",
+        "lastModified": 1760555030,
+        "narHash": "sha256-woDJr0kq3NahyVlvrKu2fJgfHn4LIj5Vdg4o/UFTTKM=",
         "owner": "cardano-scaling",
         "repo": "htlc",
-        "rev": "efb65ca89e5e5839fe5a9efa219d149032b1f506",
+        "rev": "cbc896021de1b5bd50b516940785b492449b1ded",
         "type": "github"
       },
       "original": {
