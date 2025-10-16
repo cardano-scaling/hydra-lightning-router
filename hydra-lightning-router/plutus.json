@@ -2,7 +2,7 @@
   "preamble": {
     "title": "hydra/htlc",
     "description": "Aiken contracts for project 'hydra/htlc'",
-    "version": "0.0.0",
+    "version": "0.0.1",
     "plutusVersion": "v3",
     "compiler": {
       "name": "Aiken",

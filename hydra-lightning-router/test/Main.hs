@@ -6,103 +6,72 @@ module Main
 where
 
 import Cardano.Api qualified as C
-import Cardano.Crypto.Hash qualified as Crypto
-import Convex.BuildTx (TxBuilder, execBuildTx, payToScriptDatumHash, spendPlutus, MonadBuildTx, addRequiredSignature)
-import Convex.Class (MonadMockchain, setPOSIXTime, sendTx)
-import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange), balanceForWallet)
-import Control.Monad (forM_, void)
+import Convex.BuildTx (execBuildTx)
+import Convex.Class (MonadMockchain)
+import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.Utils (failOnError, inBabbage)
 import Convex.Wallet qualified as Wallet
 import Convex.Wallet.MockWallet qualified as Wallet
-import Data.ByteString qualified as BS
-import Data.Time (UTCTime (..), diffUTCTime, fromGregorian, secondsToDiffTime, secondsToNominalDiffTime)
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
-import Hydra.HTLC.Data (Datum (Datum))
+import Data.Time (UTCTime (UTCTime), fromGregorian, secondsToDiffTime)
+import Hydra.HTLC.BuildTx (claimHTLC, payHTLC, refundHTLC)
+import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
 import Hydra.HTLC.Data qualified as HTLC
-import Hydra.HTLC.Embed (htlcValidatorScript)
-import Hydra.Invoice (PaymentId (..), StandardInvoice (..))
+import Hydra.HTLC.Upstream (shelleyPayAddrToPaymentKey)
 import Hydra.Invoice qualified as I
-import PlutusLedgerApi.V3 qualified as V3
-import PlutusTx (ToData (..), toData)
 import PlutusTx.Prelude (BuiltinByteString, toBuiltin)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, testCase)
 
--- Upstreamed here: https://github.com/IntersectMBO/cardano-api/pull/976
-shelleyPayAddrToPaymentKey :: C.Address C.ShelleyAddr -> Maybe (C.Hash C.PaymentKey)
-shelleyPayAddrToPaymentKey (C.ShelleyAddress _ pCred _) =
-  case C.fromShelleyPaymentCredential pCred of
-    C.PaymentCredentialByKey key -> Just key
-    C.PaymentCredentialByScript _ -> Nothing
-
-plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
-plutusScript = C.PlutusScript C.plutusScriptVersion
-
-alwaysSucceedsScript :: C.PlutusScript C.PlutusScriptV1
-alwaysSucceedsScript = C.examplePlutusScriptAlwaysSucceeds C.WitCtxTxIn
-
-standardInvoiceToHTLCDatum :: I.StandardInvoice -> C.Address C.ShelleyAddr -> Maybe Datum
-standardInvoiceToHTLCDatum invoice sender = do
-  b <- C.shelleyPayAddrToPlutusPubKHash $ I.recipient invoice
-  c <- C.shelleyPayAddrToPlutusPubKHash sender
-  pure $ Datum
-          { HTLC.hash = toBuiltin $ Crypto.hashToBytes $ fromPaymentId $ I.paymentId invoice,
-            HTLC.receiver = b,
-            HTLC.timeout = V3.POSIXTime $ floor $ utcTimeToPOSIXSeconds $ I.date invoice,
-            HTLC.sender = c
-          }
-
-payToPlutusScript ::
-  forall era lang m a.
+balanceAndPayHTLC ::
+  forall era m.
   (MonadFail m) =>
   (C.MonadError (BalanceTxError era) m) =>
-  (C.IsPlutusScriptLanguage lang) =>
   (MonadMockchain era m) =>
   (C.IsBabbageBasedEra era) =>
-  (ToData a) =>
   Wallet.Wallet ->
-  C.PlutusScript lang ->
-  a ->
+  HTLC.Datum ->
   C.Value ->
   m C.TxIn
-payToPlutusScript wallet script datum value = inBabbage @era $ do
-  let tx = execBuildTx $ payToScriptDatumHash Defaults.networkId (plutusScript script) datum C.NoStakeAddress value
+balanceAndPayHTLC wallet datum value = inBabbage @era $ do
+  let tx = execBuildTx $ payHTLC Defaults.networkId datum value
   i <- C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
   pure (C.TxIn i (C.TxIx 0))
 
-spendFromPlutusScript ::
-  forall era lang m dat red.
+balanceAndClaimHTLC ::
+  forall era m.
   (MonadFail m) =>
   (MonadMockchain era m) =>
   (C.MonadError (BalanceTxError era) m) =>
-  (C.HasScriptLanguageInEra lang era) =>
-  (C.IsPlutusScriptLanguage lang) =>
   (C.IsBabbageBasedEra era) =>
-  (ToData dat) =>
-  (ToData red) =>
+  (C.HasScriptLanguageInEra C.PlutusScriptV3 era) =>
   Wallet.Wallet ->
-  C.PlutusScript lang ->
   C.TxIn ->
-  dat ->
-  red ->
-  [C.Hash C.PaymentKey] ->
+  HTLC.Datum ->
+  C.Hash C.PaymentKey ->
+  BuiltinByteString ->
   m C.TxId
-spendFromPlutusScript wallet script ref datum redeemer extraSigs = inBabbage @era $ do
-  let tx = execBuildTx $ do
-             spendPlutus ref script datum redeemer
-             mapM_ addRequiredSignature extraSigs
+balanceAndClaimHTLC wallet ref datum pkh secret = inBabbage @era $ do
+  let tx = execBuildTx $ claimHTLC ref datum pkh secret
   C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
 
-canSpendToAlwaysSucceedsScript :: Assertion
-canSpendToAlwaysSucceedsScript = mockchainSucceeds $ failOnError $ payToPlutusScript Wallet.w1 alwaysSucceedsScript () (C.lovelaceToValue 1_000_000)
-
-canSpendFromAlwaysSucceedsScript :: Assertion
-canSpendFromAlwaysSucceedsScript = mockchainSucceeds $ failOnError $ do
-  ref <- payToPlutusScript Wallet.w1 alwaysSucceedsScript () (C.lovelaceToValue 1_000_000)
-  spendFromPlutusScript Wallet.w1 alwaysSucceedsScript ref () () []
+balanceAndRefundHTLC ::
+  forall era m.
+  (MonadFail m) =>
+  (MonadMockchain era m) =>
+  (C.MonadError (BalanceTxError era) m) =>
+  (C.IsBabbageBasedEra era) =>
+  (C.HasScriptLanguageInEra C.PlutusScriptV3 era) =>
+  Wallet.Wallet ->
+  C.TxIn ->
+  HTLC.Datum ->
+  C.Hash C.PaymentKey ->
+  m C.TxId
+balanceAndRefundHTLC wallet ref datum pkh = inBabbage @era $ do
+  let tx = execBuildTx $ refundHTLC ref datum pkh
+  C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
 
 canSpendToHTLCScript :: Assertion
 canSpendToHTLCScript = do
@@ -111,7 +80,7 @@ canSpendToHTLCScript = do
   let date = UTCTime (fromGregorian 2040 01 01) (secondsToDiffTime 0)
   (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
-  mockchainSucceeds $ failOnError $ payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
+  mockchainSucceeds $ failOnError $ balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
 
 canClaimFromHTLCScript :: Assertion
 canClaimFromHTLCScript = do
@@ -121,10 +90,10 @@ canClaimFromHTLCScript = do
   (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
   let Just pkh = shelleyPayAddrToPaymentKey recipient
-  let red = HTLC.Claim $ toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
+  let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
-    ref <- payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
-    spendFromPlutusScript Wallet.w2 htlcValidatorScript ref dat red [pkh]
+    ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
+    balanceAndClaimHTLC Wallet.w2 ref dat pkh secret
 
 canRefundFromHTLCScript :: Assertion
 canRefundFromHTLCScript = do
@@ -135,8 +104,8 @@ canRefundFromHTLCScript = do
   let Just dat = standardInvoiceToHTLCDatum invoice sender
   let Just pkh = shelleyPayAddrToPaymentKey sender
   mockchainSucceeds $ failOnError $ do
-    ref <- payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
-    spendFromPlutusScript Wallet.w1 htlcValidatorScript ref dat HTLC.Refund [pkh]
+    ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
+    balanceAndRefundHTLC Wallet.w1 ref dat pkh
 
 tests :: TestTree
 tests =
@@ -144,9 +113,7 @@ tests =
     "unit tests"
     [ testGroup
         "payments"
-        [ testCase "can spend to alwaysSucceeds script" canSpendToAlwaysSucceedsScript,
-          testCase "can spend from alwaysSucceeds script" canSpendFromAlwaysSucceedsScript,
-          testCase "can spend to htlc script" canSpendToHTLCScript,
+        [ testCase "can spend to htlc script" canSpendToHTLCScript,
           testCase "can claim script output from htlc script" canClaimFromHTLCScript,
           testCase "can refund script output from htlc script" canRefundFromHTLCScript
         ]
