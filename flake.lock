@@ -2665,11 +2665,11 @@
         "nixpkgs": "nixpkgs_9"
       },
       "locked": {
-        "lastModified": 1760390620,
-        "narHash": "sha256-m2jcPpqqWMopOSQZaCXivcVtqKVoX3S2NsHq0flFgLM=",
+        "lastModified": 1760541403,
+        "narHash": "sha256-gt0nQ7QK9Tvtwe3zSZZ9b0UEVGOIkigTsjzt1jjJSL8=",
         "ref": "refs/heads/master",
-        "rev": "8c3aaad156cf3cb52eab2b8d78276447547aab63",
-        "revCount": 91,
+        "rev": "c0ad78c0a3579ff0915b229915465ec44f0939a4",
+        "revCount": 99,
         "type": "git",
         "url": "https://gitlab.horizon-haskell.net/package-sets/horizon-cardano"
       },
@@ -2942,11 +2942,11 @@
         "nixpkgs": "nixpkgs_19"
       },
       "locked": {
-        "lastModified": 1756840509,
-        "narHash": "sha256-eapob2bIOZfWpv4hR5XEl/phgs07YNnOxwIJjA1hfjQ=",
+        "lastModified": 1760555030,
+        "narHash": "sha256-woDJr0kq3NahyVlvrKu2fJgfHn4LIj5Vdg4o/UFTTKM=",
         "owner": "cardano-scaling",
         "repo": "htlc",
-        "rev": "efb65ca89e5e5839fe5a9efa219d149032b1f506",
+        "rev": "cbc896021de1b5bd50b516940785b492449b1ded",
         "type": "github"
       },
       "original": {
@@ -5251,11 +5251,11 @@
     },
     "nixpkgs_46": {
       "locked": {
-        "lastModified": 1760139962,
-        "narHash": "sha256-4xggC56Rub3WInz5eD7EZWXuLXpNvJiUPahGtMkwtuc=",
+        "lastModified": 1760423683,
+        "narHash": "sha256-Tb+NYuJhWZieDZUxN6PgglB16yuqBYQeMJyYBGCXlt8=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "7e297ddff44a3cc93673bb38d0374df8d0ad73e4",
+        "rev": "a493e93b4a259cd9fea8073f89a7ed9b1c5a1da2",
         "type": "github"
       },
       "original": {
