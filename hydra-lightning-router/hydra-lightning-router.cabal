@@ -28,6 +28,7 @@ common lang
 
   default-extensions:
     DerivingStrategies
+    GADTs
     ImportQualifiedPost
     TypeData
     ViewPatterns
@@ -36,8 +37,11 @@ library
   import:          lang
   exposed-modules:
     Hydra.HTLC.Address
+    Hydra.HTLC.BuildTx
+    Hydra.HTLC.Conversions
     Hydra.HTLC.Data
     Hydra.HTLC.Embed
+    Hydra.HTLC.Upstream
     Hydra.Lightning.Scenario
 
   hs-source-dirs:  src
@@ -46,6 +50,8 @@ library
     , base16-bytestring
     , bytestring
     , cardano-api
+    , cardano-crypto-class
+    , convex-base
     , file-embed
     , hydra-invoices
     , lens
@@ -54,6 +60,7 @@ library
     , plutus-tx
     , template-haskell
     , text
+    , time
     , websockets
 
 executable hydra-lightning-router
