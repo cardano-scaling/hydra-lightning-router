@@ -7,7 +7,7 @@ where
 
 import Cardano.Api qualified as C
 import Cardano.Crypto.Hash qualified as Crypto
-import Convex.BuildTx (TxBuilder, execBuildTx, payToScriptDatumHash, spendPlutus)
+import Convex.BuildTx (TxBuilder, execBuildTx, payToScriptDatumHash, spendPlutus, MonadBuildTx, addRequiredSignature)
 import Convex.Class (MonadMockchain, setPOSIXTime, sendTx)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange), balanceForWallet)
 import Control.Monad (forM_, void)
@@ -31,6 +31,12 @@ import PlutusTx.Prelude (BuiltinByteString, toBuiltin)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, testCase)
 
+shelleyPayAddrToPaymentKey :: C.Address C.ShelleyAddr -> Maybe (C.Hash C.PaymentKey)
+shelleyPayAddrToPaymentKey (C.ShelleyAddress _ pCred _) =
+  case C.fromShelleyPaymentCredential pCred of
+    C.PaymentCredentialByKey key -> Just key
+    C.PaymentCredentialByScript _ -> Nothing
+
 plutusScript :: (C.IsPlutusScriptLanguage lang) => C.PlutusScript lang -> C.Script lang
 plutusScript = C.PlutusScript C.plutusScriptVersion
 
@@ -40,11 +46,11 @@ alwaysSucceedsScript = C.examplePlutusScriptAlwaysSucceeds C.WitCtxTxIn
 standardInvoiceToHTLCDatum :: I.StandardInvoice -> C.Address C.ShelleyAddr -> Maybe Datum
 standardInvoiceToHTLCDatum invoice sender = do
   b <- C.shelleyPayAddrToPlutusPubKHash $ I.recipient invoice
-  c <- C.shelleyPayAddrToPlutusPubKHash $ I.recipient invoice
+  c <- C.shelleyPayAddrToPlutusPubKHash sender
   pure $ Datum
           { HTLC.hash = toBuiltin $ Crypto.hashToBytes $ fromPaymentId $ I.paymentId invoice,
             HTLC.receiver = b,
-            HTLC.timeout = V3.POSIXTime $ utcTimeToPOSIXSeconds $ I.date invoice,
+            HTLC.timeout = V3.POSIXTime $ floor $ utcTimeToPOSIXSeconds $ I.date invoice,
             HTLC.sender = c
           }
 
@@ -81,9 +87,12 @@ spendFromPlutusScript ::
   C.TxIn ->
   dat ->
   red ->
+  [C.Hash C.PaymentKey] ->
   m C.TxId
-spendFromPlutusScript wallet script ref datum redeemer = inBabbage @era $ do
-  let tx = execBuildTx $ spendPlutus ref script datum redeemer
+spendFromPlutusScript wallet script ref datum redeemer extraSigs = inBabbage @era $ do
+  let tx = execBuildTx $ do
+             spendPlutus ref script datum redeemer
+             mapM_ addRequiredSignature extraSigs
   C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
 
 canSpendToAlwaysSucceedsScript :: Assertion
@@ -92,14 +101,14 @@ canSpendToAlwaysSucceedsScript = mockchainSucceeds $ failOnError $ payToPlutusSc
 canSpendFromAlwaysSucceedsScript :: Assertion
 canSpendFromAlwaysSucceedsScript = mockchainSucceeds $ failOnError $ do
   ref <- payToPlutusScript Wallet.w1 alwaysSucceedsScript () (C.lovelaceToValue 1_000_000)
-  spendFromPlutusScript Wallet.w1 alwaysSucceedsScript ref () ()
+  spendFromPlutusScript Wallet.w1 alwaysSucceedsScript ref () () []
 
 canSpendToHTLCScript :: Assertion
 canSpendToHTLCScript = do
   let sender = Wallet.address Defaults.networkId Wallet.w1
   let recipient = Wallet.address Defaults.networkId Wallet.w2
   let date = UTCTime (fromGregorian 2040 01 01) (secondsToDiffTime 0)
-  (invoice, k) <- I.generateStandardInvoice sender (C.lovelaceToValue 1_000_000) date
+  (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
   mockchainSucceeds $ failOnError $ payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
 
@@ -108,23 +117,25 @@ canClaimFromHTLCScript = do
   let sender = Wallet.address Defaults.networkId Wallet.w1
   let recipient = Wallet.address Defaults.networkId Wallet.w2
   let date = UTCTime (fromGregorian 2026 01 01) (secondsToDiffTime 0)
-  (invoice, k) <- I.generateStandardInvoice sender (C.lovelaceToValue 1_000_000) date
+  (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
+  let Just pkh = shelleyPayAddrToPaymentKey recipient
   let red = HTLC.Claim $ toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
     ref <- payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
-    spendFromPlutusScript Wallet.w2 htlcValidatorScript ref dat red
+    spendFromPlutusScript Wallet.w2 htlcValidatorScript ref dat red [pkh]
 
 canRefundFromHTLCScript :: Assertion
 canRefundFromHTLCScript = do
   let sender = Wallet.address Defaults.networkId Wallet.w1
   let recipient = Wallet.address Defaults.networkId Wallet.w2
   let date = UTCTime (fromGregorian 2026 01 01) (secondsToDiffTime 0)
-  (invoice, k) <- I.generateStandardInvoice sender (C.lovelaceToValue 1_000_000) date
+  (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
+  let Just pkh = shelleyPayAddrToPaymentKey sender
   mockchainSucceeds $ failOnError $ do
     ref <- payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
-    spendFromPlutusScript Wallet.w1 htlcValidatorScript ref dat HTLC.Refund
+    spendFromPlutusScript Wallet.w1 htlcValidatorScript ref dat HTLC.Refund [pkh]
 
 tests :: TestTree
 tests =
