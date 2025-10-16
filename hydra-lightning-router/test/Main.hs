@@ -31,6 +31,7 @@ import PlutusTx.Prelude (BuiltinByteString, toBuiltin)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, testCase)
 
+-- Upstreamed here: https://github.com/IntersectMBO/cardano-api/pull/976
 shelleyPayAddrToPaymentKey :: C.Address C.ShelleyAddr -> Maybe (C.Hash C.PaymentKey)
 shelleyPayAddrToPaymentKey (C.ShelleyAddress _ pCred _) =
   case C.fromShelleyPaymentCredential pCred of
