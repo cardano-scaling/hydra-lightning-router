@@ -36,7 +36,6 @@ common lang
 library
   import:          lang
   exposed-modules:
-    Hydra.HTLC.Address
     Hydra.HTLC.BuildTx
     Hydra.HTLC.Conversions
     Hydra.HTLC.Data
