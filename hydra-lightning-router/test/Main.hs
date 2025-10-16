@@ -37,11 +37,6 @@ plutusScript = C.PlutusScript C.plutusScriptVersion
 alwaysSucceedsScript :: C.PlutusScript C.PlutusScriptV1
 alwaysSucceedsScript = C.examplePlutusScriptAlwaysSucceeds C.WitCtxTxIn
 
-utcTimeToPOSIXTime :: UTCTime -> V3.POSIXTime
-utcTimeToPOSIXTime utc =
-  let posixSeconds = floor $ utcTimeToPOSIXSeconds utc
-   in V3.POSIXTime posixSeconds
-
 standardInvoiceToHTLCDatum :: I.StandardInvoice -> C.Address C.ShelleyAddr -> Maybe Datum
 standardInvoiceToHTLCDatum invoice sender = do
   b <- C.shelleyPayAddrToPlutusPubKHash $ I.recipient invoice
@@ -49,7 +44,7 @@ standardInvoiceToHTLCDatum invoice sender = do
   pure $ Datum
           { HTLC.hash = toBuiltin $ Crypto.hashToBytes $ fromPaymentId $ I.paymentId invoice,
             HTLC.receiver = b,
-            HTLC.timeout = utcTimeToPOSIXTime $ I.date invoice,
+            HTLC.timeout = V3.POSIXTime $ utcTimeToPOSIXSeconds $ I.date invoice,
             HTLC.sender = c
           }
 
