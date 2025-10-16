@@ -110,9 +110,10 @@ canClaimFromHTLCScript = do
   let date = UTCTime (fromGregorian 2026 01 01) (secondsToDiffTime 0)
   (invoice, k) <- I.generateStandardInvoice sender (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
+  let red = HTLC.Claim $ toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
     ref <- payToPlutusScript Wallet.w1 htlcValidatorScript dat (I.amount invoice)
-    spendFromPlutusScript Wallet.w2 htlcValidatorScript ref dat (HTLC.Claim (toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k))
+    spendFromPlutusScript Wallet.w2 htlcValidatorScript ref dat red
 
 canRefundFromHTLCScript :: Assertion
 canRefundFromHTLCScript = do
