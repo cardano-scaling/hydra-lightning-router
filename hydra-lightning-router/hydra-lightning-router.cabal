@@ -51,12 +51,14 @@ library
     , cardano-api
     , cardano-crypto-class
     , convex-base
+    , containers
     , file-embed
     , hydra-invoices
     , lens
     , lens-aeson
     , plutus-ledger-api
     , plutus-tx
+    , req
     , template-haskell
     , text
     , time
