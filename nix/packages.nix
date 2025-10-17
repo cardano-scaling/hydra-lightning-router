@@ -12,6 +12,9 @@
         packages = p: [ p.hydra-lightning-router ];
         buildInputs = [
           legacyPackages.cabal-install
+          inputs.cardano-node.packages.${system}.cardano-node
+          inputs.cardano-node.packages.${system}.cardano-cli
+          inputs.horizon.packages.${system}.hydra-node
         ];
       };
 

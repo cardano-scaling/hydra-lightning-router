@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Main
   ( main,
@@ -6,9 +7,10 @@ module Main
 where
 
 import Cardano.Api qualified as C
-import Control.Monad.IO.Class (liftIO)
-import Convex.BuildTx (execBuildTx, mintPlutus)
-import Convex.Class (MonadMockchain, querySlotNo, setSlot)
+import Cardano.Api.HasTypeProxy
+import Data.Proxy (Proxy (..))
+import Convex.BuildTx (execBuildTx)
+import Convex.Class (MonadMockchain)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
@@ -25,6 +27,18 @@ import Hydra.Invoice qualified as I
 import PlutusTx.Prelude (BuiltinByteString, toBuiltin)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, testCase)
+import qualified Data.ByteString as BS
+import Data.ByteString.Convert ()
+
+
+instance HasTypeProxy BS.ByteString where
+  data AsType BS.ByteString = AsByteString
+  proxyToAsType _ = AsByteString
+
+
+instance C.SerialiseAsRawBytes BS.ByteString where
+  serialiseToRawBytes = id
+  deserialiseFromRawBytes AsByteString = pure
 
 balanceAndPayHTLC ::
   forall era m.
