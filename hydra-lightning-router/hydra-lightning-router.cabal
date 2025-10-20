@@ -46,21 +46,21 @@ library
   hs-source-dirs:  src
   build-depends:
     , aeson
+    , async
     , base16-bytestring
     , bytestring
     , cardano-api
-    , hydra-test-utils
     , cardano-crypto-class
-    , convex-base
     , containers
+    , convex-base
     , file-embed
-    , flat
-    , hydra-tx
     , hydra-cardano-api
-    , hydra-node
     , hydra-cluster
-    , hydra-plutus
     , hydra-invoices
+    , hydra-node
+    , hydra-plutus
+    , hydra-test-utils
+    , hydra-tx
     , lens
     , lens-aeson
     , plutus-ledger-api
@@ -76,7 +76,7 @@ executable hydra-lightning-router
   main-is:        Main.hs
   hs-source-dirs: app
   build-depends:  hydra-lightning-router
-  ghc-options: -threaded -rtsopts
+  ghc-options:    -threaded -rtsopts
 
 test-suite hydra-lightning-router-tests
   import:         lang
@@ -91,7 +91,6 @@ test-suite hydra-lightning-router-tests
     , convex-coin-selection
     , convex-mockchain
     , convex-wallet
-    , flat
     , hydra-invoices
     , hydra-lightning-router
     , plutus-ledger-api
@@ -99,4 +98,5 @@ test-suite hydra-lightning-router-tests
     , tasty
     , tasty-hunit
     , time
-  ghc-options: -threaded -rtsopts
+
+  ghc-options:    -threaded -rtsopts

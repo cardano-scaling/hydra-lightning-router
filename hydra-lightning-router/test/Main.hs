@@ -8,7 +8,6 @@ where
 
 import Cardano.Api qualified as C
 import Cardano.Api.HasTypeProxy
-import Data.Proxy (Proxy (..))
 import Convex.BuildTx (execBuildTx)
 import Convex.Class (MonadMockchain)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
@@ -18,6 +17,9 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.Utils (failOnError, inBabbage, utcTimeToSlot)
 import Convex.Wallet qualified as Wallet
 import Convex.Wallet.MockWallet qualified as Wallet
+import Data.ByteString qualified as BS
+import Data.ByteString.Convert ()
+import Data.Proxy (Proxy (..))
 import Data.Time (UTCTime (UTCTime), fromGregorian, secondsToDiffTime)
 import Hydra.HTLC.BuildTx (claimHTLC, payHTLC, refundHTLC)
 import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
@@ -27,14 +29,10 @@ import Hydra.Invoice qualified as I
 import PlutusTx.Prelude (BuiltinByteString, toBuiltin)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, testCase)
-import qualified Data.ByteString as BS
-import Data.ByteString.Convert ()
-
 
 instance HasTypeProxy BS.ByteString where
   data AsType BS.ByteString = AsByteString
   proxyToAsType _ = AsByteString
-
 
 instance C.SerialiseAsRawBytes BS.ByteString where
   serialiseToRawBytes = id
