@@ -2469,11 +2469,11 @@
         "nixpkgs": "nixpkgs_10"
       },
       "locked": {
-        "lastModified": 1760814365,
-        "narHash": "sha256-zN8D+gweYlnRahzy9us7m3gSVg7vYxXJYofUmcaKLx4=",
+        "lastModified": 1760945549,
+        "narHash": "sha256-jBecafgpTwuoYpkEI1a48M0tkAsxKc7TWgX1TPE+CDE=",
         "ref": "refs/heads/master",
-        "rev": "eb44ff98a302ff9cfaf181a532da71163eaa6390",
-        "revCount": 72,
+        "rev": "52e3430d914271207f62c53e561bfb46cafa54e5",
+        "revCount": 74,
         "type": "git",
         "url": "https://gitlab.horizon-haskell.net/package-sets/horizon-hydra"
       },
