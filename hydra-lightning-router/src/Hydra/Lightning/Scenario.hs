@@ -2,14 +2,16 @@
 
 module Hydra.Lightning.Scenario where
 
-import Cardano.Api (Coin, PolicyAssets, PolicyId, Tx)
+import Cardano.Api (Coin, PolicyAssets, PolicyId)
 import Cardano.Api qualified as C
 import CardanoClient (buildAddress)
 import CardanoNode (withCardanoNodeDevnet)
+import System.Timeout (timeout)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (concurrently)
-import Control.Exception (finally)
+import Control.Exception (IOException, catch, finally)
 import Control.Lens (contramap, (^.), (^?))
-import Control.Monad (guard)
+import Control.Monad (forever, guard, unless)
 import Data.Aeson ((.=))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -22,11 +24,14 @@ import Data.Map (Map)
 import Data.Proxy (Proxy (Proxy))
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
-import Debug.Trace (traceShowM)
+import Data.Text.IO qualified as T
+import Debug.Trace (traceShow, traceShowM)
 import GHC.Generics (Generic)
 import Hydra.API.HTTPServer (DraftCommitTxResponse (..))
-import Hydra.Cardano.Api (UTxO, signTx)
+import Hydra.API.ServerOutput (ServerOutput)
+import Hydra.Cardano.Api (Tx, UTxO, signTx)
 import Hydra.Chain (PostTxError (..))
 import Hydra.Chain.Backend (ChainBackend, buildTransaction, buildTransactionWithPParams, buildTransactionWithPParams')
 import Hydra.Chain.Backend qualified as Backend
@@ -71,7 +76,21 @@ import HydraNode
   )
 import Network.HTTP.Req
 import Network.HTTP.Req qualified as Req
-import Network.WebSockets (Connection, receiveDataMessage, runClient, sendTextData)
+import Network.Socket (withSocketsDo)
+import Network.WebSockets
+  ( Connection,
+    ConnectionException,
+    ServerApp,
+    acceptRequest,
+    defaultConnectionOptions,
+    receiveData,
+    receiveDataMessage,
+    runClient,
+    runServer,
+    sendClose,
+    sendTextData,
+    withPingThread,
+  )
 import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe, withTempDir)
 
 -- | Single hydra-node where the commit is done using some wallet UTxO.
@@ -96,9 +115,6 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
       let contestationPeriod = 100
 
-      tip <- Backend.queryTip backend
-      (faucetVk, faucetSk) <- keysFor Faucet
-
       aliceChainConfig <- chainConfigFor Alice workDir backend hydraScriptsTxId [Carol] contestationPeriod
 
       carolChainConfig <- chainConfigFor Carol workDir backend hydraScriptsTxId [Alice] contestationPeriod
@@ -114,11 +130,17 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
       (aliceWalletVk, aliceWalletSk) <- keysFor AliceFunds
       (bobWalletVk, bobWalletSk) <- keysFor BobFunds
-      (carolWalletVk, carolWalletSk) <- keysFor CarolFunds
+      let port1 :: Int = 4002
+      let port2 :: Int = 4004
+      let timeoutVal = 100
+      let path = "/"
+      let wsServer1 = connectWs timeoutVal port1 path
+      let wsServer2 = connectWs timeoutVal port2 path
 
       let hydraHead1 = withHydraNode hydraTracer aliceChainConfig workDir 1 aliceSk [carolVk] [1, 2] $ \n1 ->
             withHydraNode hydraTracer carolChainConfig workDir 2 carolSk [aliceVk] [1, 2] $ \n2 -> do
               utxoToCommit <- seedFromFaucet backend aliceWalletVk (C.lovelaceToValue 12_000_000) (contramap FromFaucet tracer)
+              wsServer1
               send n1 $ input "Init" []
               headId <- waitMatch (10 * blockTime) n1 $ headIsInitializingWith (Set.fromList [alice, carol])
 
@@ -128,7 +150,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                     POST
                     (http "127.0.0.1" /: "commit")
                     (ReqBodyJson utxoToCommit)
-                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse (Tx C.ConwayEra))))
+                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
                     (port $ 4000 + 1)
 
               let DraftCommitTxResponse {commitTx} = responseBody res
@@ -145,6 +167,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
       let hydraHead2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
             withHydraNode hydraTracer carolChainConfig2 workDir2 4 carolSk [bobVk] [3, 4] $ \n4 -> do
               utxoToCommit2 <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 13_000_000) (contramap FromFaucet tracer)
+              wsServer2
               send n3 $ input "Init" []
               headId <- waitMatch (10 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
               res <-
@@ -153,7 +176,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                     POST
                     (http "127.0.0.1" /: "commit")
                     (ReqBodyJson utxoToCommit2)
-                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse (Tx C.ConwayEra))))
+                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
                     (port $ 4000 + 3)
 
               let DraftCommitTxResponse {commitTx = commitTx2} = responseBody res
@@ -169,6 +192,28 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
       (a, b) <- concurrently hydraHead1 hydraHead2
       pure ()
+  where
+    application con = do
+      withPingThread con 30 (return ()) $ do
+        receiveInputs con
+        sendClose con ("Bye!" :: Text)
+
+    connectWs n portNo path =
+      if n < 0
+        then error "Could not connect"
+        else withSocketsDo $ runClient "127.0.0.1" portNo path $ \con ->
+          application con
+            `catch` \(_ :: IOException) -> do
+              threadDelay 1
+              connectWs (n - 1) portNo path
+
+    receiveInputs :: Connection -> IO (Maybe ())
+    receiveInputs con = timeout 100 $ do
+      msg <- receiveData con
+      print msg
+      case Aeson.eitherDecode msg :: Either String Aeson.Value of
+        Right i -> print i
+        Left e -> error e
 
 main :: IO ()
 main = hspec $ around (showLogsOnFailure "spec") $ do

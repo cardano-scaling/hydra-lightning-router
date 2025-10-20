@@ -63,6 +63,7 @@ library
     , hydra-tx
     , lens
     , lens-aeson
+    , network
     , plutus-ledger-api
     , plutus-tx
     , req
