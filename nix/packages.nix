@@ -16,6 +16,9 @@
           inputs.cardano-node.packages.${system}.cardano-cli
           inputs.hydra.packages.${system}.hydra-node
         ];
+        shellHook = ''
+          export PATH="${inputs.hydra.packages.${system}.hydra-node}/bin:$PATH"
+        '';
       };
 
       inherit legacyPackages;
