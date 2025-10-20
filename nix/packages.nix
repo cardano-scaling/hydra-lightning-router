@@ -14,7 +14,7 @@
           legacyPackages.cabal-install
           inputs.cardano-node.packages.${system}.cardano-node
           inputs.cardano-node.packages.${system}.cardano-cli
-          inputs.horizon.packages.${system}.hydra-node
+          inputs.hydra.packages.${system}.hydra-node
         ];
       };
 

@@ -11,7 +11,7 @@
       url = "github:cardano-scaling/hydra-coding-standards/0.7.1";
       inputs.treefmt-nix.follows = "treefmt-nix";
     };
-    hydra.url = "github:cardano-scaling/hydra/0.22.4";
+    hydra.url = "github:cardano-scaling/hydra/1.0.0";
     import-tree.url = "github:vic/import-tree";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
