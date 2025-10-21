@@ -3,47 +3,55 @@
 module Hydra.Lightning.Scenario (main) where
 
 import Cardano.Api qualified as C
+import CardanoClient (QueryPoint (QueryTip))
 import CardanoNode (withCardanoNodeDevnet)
-import System.Timeout (timeout)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently)
 import Control.Exception (IOException, catch, finally)
-import Control.Lens (contramap, (^?))
+import Control.Lens (contramap, (^..), (^?))
 import Control.Monad (guard)
 import Data.Aeson qualified as Aeson
-import Data.Aeson.Lens (key)
+import Data.Aeson.Lens (key, values)
 import Data.Proxy (Proxy (Proxy))
 import Data.Set qualified as Set
-import Data.Text (Text)
+import Data.Time (addUTCTime)
+import Data.Time.Clock.POSIX (getCurrentTime)
 import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx))
-import Hydra.Cardano.Api (Tx, signTx)
+import Hydra.Cardano.Api (Tx, mkScriptAddress, mkTxOutAutoBalance, mkTxOutDatumInline, signTx, toPlutusKeyHash)
+import Hydra.Cardano.Api.Pretty (renderTxWithUTxO)
 import Hydra.Chain.Backend (ChainBackend)
 import Hydra.Chain.Backend qualified as Backend
 import Hydra.Cluster.Faucet (seedFromFaucet)
 import Hydra.Cluster.Faucet qualified as Faucet
-import Hydra.Cluster.Fixture (Actor (AliceFunds, BobFunds, Faucet, Carol, Bob, Alice), alice, aliceSk, aliceVk, bob, bobSk, bobVk, carol, carolSk, carolVk)
+import Hydra.Cluster.Fixture (Actor (Alice, AliceFunds, Bob, BobFunds, Carol, Faucet), alice, aliceSk, aliceVk, bob, bobSk, bobVk, carol, carolSk, carolVk)
 import Hydra.Cluster.Scenarios (EndToEndLog (FromCardanoNode, FromFaucet, FromHydraNode), headIsInitializingWith, refuelIfNeeded, returnFundsToFaucet)
 import Hydra.Cluster.Util (chainConfigFor, keysFor)
+import Hydra.HTLC.Data (Datum (Datum, hash, receiver, sender, timeout))
+import Hydra.HTLC.Embed (htlcValidatorScript)
+import Hydra.Invoice qualified as I
 import Hydra.Logging (Tracer, showLogsOnFailure)
+import Hydra.Plutus.Extras.Time (posixFromUTCTime)
 import Hydra.Tx ()
 import Hydra.Tx.ContestationPeriod qualified as CP
 import HydraNode
-  ( input,
+  ( getProtocolParameters,
+    input,
     requestCommitTx,
     send,
     waitMatch,
     withHydraNode,
   )
-import Network.HTTP.Req (req, responseBody, port, http , (/:), POST (POST), defaultHttpConfig, runReq)
+import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
 import Network.HTTP.Req qualified as Req
 import Network.Socket (withSocketsDo)
 import Network.WebSockets
   ( Connection,
     receiveData,
     runClient,
-    sendClose,
     withPingThread,
   )
+import PlutusTx.Builtins (toBuiltin)
+import System.Timeout qualified as Timeout
 import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe, withTempDir)
 
 -- | Single hydra-node where the commit is done using some wallet UTxO.
@@ -86,9 +94,10 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
       let port1 :: Int = 4002
       let port2 :: Int = 4004
       let timeoutVal :: Int = 100
-      let path :: String = "/"
+      let path :: String = "/?history=no"
       let wsServer1 = connectWs timeoutVal port1 path
       let wsServer2 = connectWs timeoutVal port2 path
+      I.UnsafePreImage preImage <- I.generatePreImage
 
       let hydraHead1 = withHydraNode hydraTracer aliceChainConfig workDir 1 aliceSk [carolVk] [1, 2] $ \n1 ->
             withHydraNode hydraTracer carolChainConfig workDir 2 carolSk [aliceVk] [1, 2] $ \n2 -> do
@@ -111,11 +120,22 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
               requestCommitTx n2 mempty >>= Backend.submitTransaction backend
 
-              headUTxO <- waitMatch (20 * blockTime) n1 $ \v -> do
+              aliceHeadUTxO <- waitMatch (20 * blockTime) n1 $ \v -> do
                 guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
                 guard $ v ^? key "tag" == Just "HeadIsOpen"
                 pure $ v ^? key "utxo"
-              headUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit)
+              aliceHeadUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit)
+              pparams <- getProtocolParameters n1
+              lockTx <- buildLockTx pparams utxoToCommit preImage aliceWalletVk bobWalletVk
+              let signedL2tx = signTx aliceWalletSk lockTx
+              putStrLn $ renderTxWithUTxO utxoToCommit signedL2tx
+              send n1 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
+
+              waitMatch 10 n2 $ \v -> do
+                guard $ v ^? key "tag" == Just "SnapshotConfirmed"
+                guard $
+                  Aeson.toJSON signedL2tx
+                    `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
       let hydraHead2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
             withHydraNode hydraTracer carolChainConfig2 workDir2 4 carolSk [bobVk] [3, 4] $ \n4 -> do
@@ -137,21 +157,51 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
               requestCommitTx n4 mempty >>= Backend.submitTransaction backend
 
-              headUTxO <- waitMatch (20 * blockTime) n3 $ \v -> do
+              bobHeadUTxO <- waitMatch (20 * blockTime) n3 $ \v -> do
                 guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
                 guard $ v ^? key "tag" == Just "HeadIsOpen"
                 pure $ v ^? key "utxo"
-              headUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit2)
+              bobHeadUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit2)
 
       _ <- concurrently hydraHead1 hydraHead2
       pure ()
   where
+    buildLockTx pparams utxo preImage sender' recipient' = do
+      networkId <- Backend.queryNetworkId backend
+      let scriptAddress = mkScriptAddress networkId htlcValidatorScript
+      timeout <- posixFromUTCTime . addUTCTime 100 <$> getCurrentTime
+      let sender = toPlutusKeyHash $ C.verificationKeyHash sender'
+      let receiver = toPlutusKeyHash $ C.verificationKeyHash recipient'
+      let d =
+            Datum
+              { hash = toBuiltin preImage,
+                timeout,
+                sender,
+                receiver
+              }
+
+      let scriptOutput =
+            mkTxOutAutoBalance
+              pparams
+              scriptAddress
+              (C.lovelaceToValue 0)
+              (mkTxOutDatumInline d)
+              C.ReferenceScriptNone
+
+      systemStart <- Backend.querySystemStart backend QueryTip
+      eraHistory <- Backend.queryEraHistory backend QueryTip
+      stakePools <- Backend.queryStakePools backend QueryTip
+      case Backend.buildTransactionWithPParams' pparams systemStart eraHistory stakePools scriptAddress utxo [] [scriptOutput] Nothing of
+        Left e -> error $ show e
+        Right tx -> pure tx
+
     application con = do
       withPingThread con 30 (return ()) $ do
-        _ <- receiveInputs con
-        sendClose con ("Bye!" :: Text)
+        _ <- Timeout.timeout 100 $ receiveInputs con
+        pure ()
+    -- sendClose con ("Bye!" :: Text)
 
-    connectWs :: Int -> Int -> String -> IO () 
+    connectWs :: Int -> Int -> String -> IO ()
     connectWs n portNo path =
       if n < 0
         then error "Could not connect"
@@ -161,13 +211,13 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
               threadDelay 1
               connectWs (n - 1) portNo path
 
-    receiveInputs :: Connection -> IO (Maybe ())
-    receiveInputs con = timeout 100 $ do
+    receiveInputs :: Connection -> IO ()
+    receiveInputs con = do
       msg <- receiveData con
       print msg
       case Aeson.eitherDecode msg :: Either String Aeson.Value of
         Right i -> print i
-        Left e -> error e
+        Left _ -> pure ()
 
 main :: IO ()
 main = hspec $ around (showLogsOnFailure "spec") $ do
