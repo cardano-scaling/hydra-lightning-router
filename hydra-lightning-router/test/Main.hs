@@ -8,8 +8,8 @@ where
 
 import Cardano.Api qualified as C
 import Cardano.Api.HasTypeProxy
-import Convex.BuildTx (execBuildTx)
-import Convex.Class (MonadMockchain)
+import Convex.BuildTx (execBuildTx, mintPlutus)
+import Convex.Class (MonadMockchain, setSlot)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
@@ -90,7 +90,8 @@ balanceAndRefundHTLC wallet ref datum lb pkh = inBabbage @era $ do
 
 balanceAndMintNativeAsset ::
   forall era m.
-  (MonadFail m, MonadMockchain era m, C.MonadError (BalanceTxError era) m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV1 era) => Wallet.Wallet ->
+  (MonadFail m, MonadMockchain era m, C.MonadError (BalanceTxError era) m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV1 era) =>
+  Wallet.Wallet ->
   m C.TxId
 balanceAndMintNativeAsset wallet = inBabbage @era $ do
   let tx = execBuildTx (mintPlutus (C.examplePlutusScriptAlwaysSucceeds C.WitCtxMint) () (C.UnsafeAssetName "deadbeef") 100)
@@ -117,7 +118,6 @@ canClaimFromHTLCScript = do
   let ub = C.TxValidityUpperBound C.shelleyBasedEra $ Just sn
   let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
-
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
     balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
 
@@ -130,7 +130,7 @@ canClaimNativeTokenFromHTLCScript = do
   let policyId = C.PolicyId $ C.hashScript (C.PlutusScript C.PlutusScriptV1 script)
   let assetName = C.UnsafeAssetName "deadbeef"
   let assetId = C.AssetId policyId assetName
-  let mintedValue = C.valueFromList [(assetId, C.Quantity 100)]  
+  let mintedValue = C.valueFromList [(assetId, C.Quantity 100)]
   (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_200_000 <> mintedValue) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
   let Just pkh = shelleyPayAddrToPaymentKey recipient
@@ -139,7 +139,7 @@ canClaimNativeTokenFromHTLCScript = do
   let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
     balanceAndMintNativeAsset Wallet.w1
-    liftIO $ print $ I.amount invoice
+    C.liftIO $ print $ I.amount invoice
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
     balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
 
