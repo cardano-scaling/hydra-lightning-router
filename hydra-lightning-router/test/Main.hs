@@ -5,14 +5,15 @@ module Main
   )
 where
 
+import Control.Monad.IO.Class (liftIO)
 import Cardano.Api qualified as C
 import Convex.BuildTx (execBuildTx)
-import Convex.Class (MonadMockchain)
+import Convex.Class (MonadMockchain, querySlotNo, setSlot)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainSucceeds)
-import Convex.Utils (failOnError, inBabbage)
+import Convex.Utils (failOnError, inBabbage, utcTimeToSlot)
 import Convex.Wallet qualified as Wallet
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.Time (UTCTime (UTCTime), fromGregorian, secondsToDiffTime)
@@ -50,11 +51,12 @@ balanceAndClaimHTLC ::
   Wallet.Wallet ->
   C.TxIn ->
   HTLC.Datum ->
+  C.TxValidityUpperBound era ->
   C.Hash C.PaymentKey ->
   BuiltinByteString ->
   m C.TxId
-balanceAndClaimHTLC wallet ref datum pkh secret = inBabbage @era $ do
-  let tx = execBuildTx $ claimHTLC ref datum pkh secret
+balanceAndClaimHTLC wallet ref datum ub pkh secret = inBabbage @era $ do
+  let tx = execBuildTx $ claimHTLC ref datum ub pkh secret
   C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
 
 balanceAndRefundHTLC ::
@@ -67,10 +69,11 @@ balanceAndRefundHTLC ::
   Wallet.Wallet ->
   C.TxIn ->
   HTLC.Datum ->
+  C.TxValidityLowerBound era ->
   C.Hash C.PaymentKey ->
   m C.TxId
-balanceAndRefundHTLC wallet ref datum pkh = inBabbage @era $ do
-  let tx = execBuildTx $ refundHTLC ref datum pkh
+balanceAndRefundHTLC wallet ref datum lb pkh = inBabbage @era $ do
+  let tx = execBuildTx $ refundHTLC ref datum lb pkh
   C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
 
 canSpendToHTLCScript :: Assertion
@@ -90,10 +93,12 @@ canClaimFromHTLCScript = do
   (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
   let Just pkh = shelleyPayAddrToPaymentKey recipient
+  let Right (sn, _, _) = utcTimeToSlot Defaults.eraHistory Defaults.systemStart date
+  let ub = C.TxValidityUpperBound C.shelleyBasedEra $ Just sn
   let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
-    balanceAndClaimHTLC Wallet.w2 ref dat pkh secret
+    balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
 
 canRefundFromHTLCScript :: Assertion
 canRefundFromHTLCScript = do
@@ -103,9 +108,12 @@ canRefundFromHTLCScript = do
   (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
   let Just pkh = shelleyPayAddrToPaymentKey sender
+  let Right (sn, _, _) = utcTimeToSlot Defaults.eraHistory Defaults.systemStart date
+  let lb = C.TxValidityLowerBound C.allegraBasedEra (sn + 1)
   mockchainSucceeds $ failOnError $ do
+    setSlot $ sn + 1
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
-    balanceAndRefundHTLC Wallet.w1 ref dat pkh
+    balanceAndRefundHTLC Wallet.w1 ref dat lb pkh
 
 tests :: TestTree
 tests =
