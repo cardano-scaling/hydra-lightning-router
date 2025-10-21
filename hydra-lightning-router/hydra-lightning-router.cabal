@@ -30,6 +30,7 @@ common lang
     DerivingStrategies
     GADTs
     ImportQualifiedPost
+    PatternSynonyms
     TypeData
     ViewPatterns
 
@@ -58,19 +59,16 @@ library
     , hydra-cluster
     , hydra-invoices
     , hydra-node
-    , hydra-plutus-extras
     , hydra-test-utils
     , hydra-tx
     , lens
     , lens-aeson
-    , network
     , plutus-ledger-api
     , plutus-tx
     , req
     , template-haskell
     , text
     , time
-    , websockets
 
 executable hydra-lightning-router
   import:         lang
