@@ -1,94 +1,47 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Hydra.Lightning.Scenario where
+module Hydra.Lightning.Scenario (main) where
 
-import Cardano.Api (Coin, PolicyAssets, PolicyId)
 import Cardano.Api qualified as C
-import CardanoClient (buildAddress)
 import CardanoNode (withCardanoNodeDevnet)
 import System.Timeout (timeout)
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently)
 import Control.Exception (IOException, catch, finally)
-import Control.Lens (contramap, (^.), (^?))
-import Control.Monad (forever, guard, unless)
-import Data.Aeson ((.=))
+import Control.Lens (contramap, (^?))
+import Control.Monad (guard)
 import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Lens (key)
-import Data.Aeson.Types (Pair)
-import Data.ByteString (ByteString)
-import Data.ByteString.Base16 qualified as Base16
-import Data.Functor ((<&>))
-import Data.Map (Map)
 import Data.Proxy (Proxy (Proxy))
 import Data.Set qualified as Set
 import Data.Text (Text)
-import Data.Text qualified as T
-import Data.Text.Encoding (encodeUtf8)
-import Data.Text.IO qualified as T
-import Debug.Trace (traceShow, traceShowM)
-import GHC.Generics (Generic)
-import Hydra.API.HTTPServer (DraftCommitTxResponse (..))
-import Hydra.API.ServerOutput (ServerOutput)
-import Hydra.Cardano.Api (Tx, UTxO, signTx)
-import Hydra.Chain (PostTxError (..))
-import Hydra.Chain.Backend (ChainBackend, buildTransaction, buildTransactionWithPParams, buildTransactionWithPParams')
+import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx))
+import Hydra.Cardano.Api (Tx, signTx)
+import Hydra.Chain.Backend (ChainBackend)
 import Hydra.Chain.Backend qualified as Backend
-import Hydra.Cluster.Faucet (FaucetLog, createOutputAtAddress, seedFromFaucet, seedFromFaucet_)
+import Hydra.Cluster.Faucet (seedFromFaucet)
 import Hydra.Cluster.Faucet qualified as Faucet
-import Hydra.Cluster.Fixture (Actor (..), actorName, alice, aliceSk, aliceVk, bob, bobSk, bobVk, carol, carolSk, carolVk)
-import Hydra.Cluster.Mithril (MithrilLog)
-import Hydra.Cluster.Options (Options)
-import Hydra.Cluster.Scenarios (EndToEndLog (..), headIsInitializingWith, refuelIfNeeded, returnFundsToFaucet)
-import Hydra.Cluster.Util (chainConfigFor, chainConfigFor', keysFor, modifyConfig, setNetworkId)
-import Hydra.Contract (hydraScriptCatalogue)
-import Hydra.Contract.Dummy (dummyRewardingScript)
-import Hydra.Ledger.Cardano (mkSimpleTx, mkTransferTx, unsafeBuildTransaction)
-import Hydra.Ledger.Cardano.Evaluate (maxTxExecutionUnits)
-import Hydra.Logging (Tracer, showLogsOnFailure, traceWith)
-import Hydra.Node.DepositPeriod (DepositPeriod (..))
-import Hydra.Options (CardanoChainConfig (..), ChainBackendOptions (..), DirectOptions (..), RunOptions (..), startChainFrom)
-import Hydra.Tx (HeadId, IsTx (balance), Party, txId)
+import Hydra.Cluster.Fixture (Actor (AliceFunds, BobFunds, Faucet, Carol, Bob, Alice), alice, aliceSk, aliceVk, bob, bobSk, bobVk, carol, carolSk, carolVk)
+import Hydra.Cluster.Scenarios (EndToEndLog (FromCardanoNode, FromFaucet, FromHydraNode), headIsInitializingWith, refuelIfNeeded, returnFundsToFaucet)
+import Hydra.Cluster.Util (chainConfigFor, keysFor)
+import Hydra.Logging (Tracer, showLogsOnFailure)
+import Hydra.Tx ()
 import Hydra.Tx.ContestationPeriod qualified as CP
-import Hydra.Tx.Utils (dummyValidatorScript, verificationKeyToOnChainId)
 import HydraNode
-  ( HydraClient (..),
-    HydraNodeLog,
-    getProtocolParameters,
-    getSnapshotConfirmed,
-    getSnapshotLastSeen,
-    getSnapshotUTxO,
-    input,
-    output,
-    postDecommit,
-    prepareHydraNode,
+  ( input,
     requestCommitTx,
     send,
-    waitFor,
-    waitForAllMatch,
-    waitForNodesConnected,
-    waitForNodesDisconnected,
     waitMatch,
-    withHydraCluster,
     withHydraNode,
-    withPreparedHydraNode,
   )
-import Network.HTTP.Req
+import Network.HTTP.Req (req, responseBody, port, http , (/:), POST (POST), defaultHttpConfig, runReq)
 import Network.HTTP.Req qualified as Req
 import Network.Socket (withSocketsDo)
 import Network.WebSockets
   ( Connection,
-    ConnectionException,
-    ServerApp,
-    acceptRequest,
-    defaultConnectionOptions,
     receiveData,
-    receiveDataMessage,
     runClient,
-    runServer,
     sendClose,
-    sendTextData,
     withPingThread,
   )
 import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe, withTempDir)
@@ -113,7 +66,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
       refuelIfNeeded tracer backend Bob 25_000_000
       refuelIfNeeded tracer backend Carol 25_000_000
 
-      let contestationPeriod = 100
+      let contestationPeriod :: CP.ContestationPeriod = 100
 
       aliceChainConfig <- chainConfigFor Alice workDir backend hydraScriptsTxId [Carol] contestationPeriod
 
@@ -132,8 +85,8 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
       (bobWalletVk, bobWalletSk) <- keysFor BobFunds
       let port1 :: Int = 4002
       let port2 :: Int = 4004
-      let timeoutVal = 100
-      let path = "/"
+      let timeoutVal :: Int = 100
+      let path :: String = "/"
       let wsServer1 = connectWs timeoutVal port1 path
       let wsServer2 = connectWs timeoutVal port2 path
 
@@ -149,7 +102,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                   req
                     POST
                     (http "127.0.0.1" /: "commit")
-                    (ReqBodyJson utxoToCommit)
+                    (Req.ReqBodyJson utxoToCommit)
                     (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
                     (port $ 4000 + 1)
 
@@ -158,24 +111,24 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
               requestCommitTx n2 mempty >>= Backend.submitTransaction backend
 
-              lockedUTxO <- waitMatch (20 * blockTime) n1 $ \v -> do
+              headUTxO <- waitMatch (20 * blockTime) n1 $ \v -> do
                 guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
                 guard $ v ^? key "tag" == Just "HeadIsOpen"
                 pure $ v ^? key "utxo"
-              lockedUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit)
+              headUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit)
 
       let hydraHead2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
             withHydraNode hydraTracer carolChainConfig2 workDir2 4 carolSk [bobVk] [3, 4] $ \n4 -> do
               utxoToCommit2 <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 13_000_000) (contramap FromFaucet tracer)
               wsServer2
               send n3 $ input "Init" []
-              headId <- waitMatch (10 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
+              headId <- waitMatch (20 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
               res <-
                 runReq defaultHttpConfig $
                   req
                     POST
                     (http "127.0.0.1" /: "commit")
-                    (ReqBodyJson utxoToCommit2)
+                    (Req.ReqBodyJson utxoToCommit2)
                     (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
                     (port $ 4000 + 3)
 
@@ -184,20 +137,21 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
               requestCommitTx n4 mempty >>= Backend.submitTransaction backend
 
-              lockedUTxO <- waitMatch (20 * blockTime) n3 $ \v -> do
+              headUTxO <- waitMatch (20 * blockTime) n3 $ \v -> do
                 guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
                 guard $ v ^? key "tag" == Just "HeadIsOpen"
                 pure $ v ^? key "utxo"
-              lockedUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit2)
+              headUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit2)
 
-      (a, b) <- concurrently hydraHead1 hydraHead2
+      _ <- concurrently hydraHead1 hydraHead2
       pure ()
   where
     application con = do
       withPingThread con 30 (return ()) $ do
-        receiveInputs con
+        _ <- receiveInputs con
         sendClose con ("Bye!" :: Text)
 
+    connectWs :: Int -> Int -> String -> IO () 
     connectWs n portNo path =
       if n < 0
         then error "Could not connect"

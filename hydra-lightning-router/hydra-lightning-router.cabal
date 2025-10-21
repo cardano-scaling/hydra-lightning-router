@@ -58,7 +58,6 @@ library
     , hydra-cluster
     , hydra-invoices
     , hydra-node
-    , hydra-plutus
     , hydra-test-utils
     , hydra-tx
     , lens
