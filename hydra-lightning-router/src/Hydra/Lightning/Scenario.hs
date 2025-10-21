@@ -5,7 +5,9 @@ module Hydra.Lightning.Scenario (main) where
 import Cardano.Api qualified as C
 import CardanoClient (QueryPoint (QueryTip))
 import CardanoNode (withCardanoNodeDevnet)
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently)
+import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO, writeTVar)
 import Control.Exception (finally)
 import Control.Lens (contramap, (^..), (^?))
 import Control.Monad (guard)
@@ -15,6 +17,7 @@ import Data.Proxy (Proxy (Proxy))
 import Data.Set qualified as Set
 import Data.Time (addUTCTime)
 import Data.Time.Clock.POSIX (getCurrentTime)
+import GHC.Conc (atomically)
 import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx))
 import Hydra.Cardano.Api (Tx, mkScriptAddress, mkTxOutDatumInline, mkVkAddress, signTx, pattern TxOut)
 import Hydra.Cardano.Api.Pretty (renderTxWithUTxO)
@@ -22,7 +25,7 @@ import Hydra.Chain.Backend (ChainBackend)
 import Hydra.Chain.Backend qualified as Backend
 import Hydra.Cluster.Faucet (seedFromFaucet)
 import Hydra.Cluster.Faucet qualified as Faucet
-import Hydra.Cluster.Fixture (Actor (Alice, AliceFunds, Bob, BobFunds, Carol, Faucet), alice, aliceSk, aliceVk, bob, bobSk, bobVk, carol, carolSk, carolVk)
+import Hydra.Cluster.Fixture (Actor (Alice, AliceFunds, Bob, BobFunds, Carol, CarolFunds, Faucet), alice, aliceSk, aliceVk, bob, bobSk, bobVk, carol, carolSk, carolVk)
 import Hydra.Cluster.Scenarios (EndToEndLog (FromCardanoNode, FromFaucet, FromHydraNode), headIsInitializingWith, refuelIfNeeded, returnFundsToFaucet)
 import Hydra.Cluster.Util (chainConfigFor, keysFor)
 import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
@@ -81,6 +84,11 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
       (aliceWalletVk, aliceWalletSk) <- keysFor AliceFunds
       (bobWalletVk, bobWalletSk) <- keysFor BobFunds
+      (carolWalletVk, carolWalletSk) <- keysFor CarolFunds
+
+      head1Var <- newTVarIO Nothing
+      head2Var <- newTVarIO Nothing
+      let lockedVal = C.lovelaceToValue 5_000_000
 
       let hydraHead1 = withHydraNode hydraTracer aliceChainConfig workDir 1 aliceSk [carolVk] [1, 2] $ \n1 ->
             withHydraNode hydraTracer carolChainConfig workDir 2 carolSk [aliceVk] [1, 2] $ \n2 -> do
@@ -108,12 +116,11 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                 pure $ v ^? key "utxo"
               aliceHeadUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit)
               pparams <- getProtocolParameters n1
-              let val = C.lovelaceToValue 5_000_000
               let sender = vkAddress networkId aliceWalletVk
               let recipient = vkAddress networkId bobWalletVk
               let changeAddress = mkVkAddress networkId aliceWalletVk
-              invoice <- generateInvoice recipient val
-              lockTx <- buildLockTx pparams networkId invoice utxoToCommit sender changeAddress val
+              invoice <- generateInvoice recipient lockedVal
+              (lockTx, invoice) <- buildLockTx pparams networkId invoice utxoToCommit sender changeAddress lockedVal
               let signedL2tx = signTx aliceWalletSk lockTx
               putStrLn $ renderTxWithUTxO utxoToCommit signedL2tx
               send n1 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
@@ -123,10 +130,11 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                 guard $
                   Aeson.toJSON signedL2tx
                     `elem` (v ^.. key "snapshot" . key "confirmed" . values)
+              atomically $ writeTVar head1Var (Just invoice)
 
       let hydraHead2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
             withHydraNode hydraTracer carolChainConfig2 workDir2 4 carolSk [bobVk] [3, 4] $ \n4 -> do
-              utxoToCommit2 <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 13_000_000) (contramap FromFaucet tracer)
+              utxoToCommit2 <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 13_000_000) (contramap FromFaucet tracer)
               send n3 $ input "Init" []
               headId <- waitMatch (20 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
               res <-
@@ -139,7 +147,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                     (port $ 4000 + 3)
 
               let DraftCommitTxResponse {commitTx = commitTx2} = responseBody res
-              Backend.submitTransaction backend $ signTx bobWalletSk commitTx2
+              Backend.submitTransaction backend $ signTx carolWalletSk commitTx2
 
               requestCommitTx n4 mempty >>= Backend.submitTransaction backend
 
@@ -148,10 +156,33 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                 guard $ v ^? key "tag" == Just "HeadIsOpen"
                 pure $ v ^? key "utxo"
               bobHeadUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit2)
+              invoice <- waitLockInHead1 head1Var
+              pparams <- getProtocolParameters n4
+              let sender = vkAddress networkId carolWalletVk
+              let recipient = vkAddress networkId bobWalletVk
+              let changeAddress = mkVkAddress networkId carolWalletVk
+              (lockTx, _) <- buildLockTx pparams networkId invoice utxoToCommit2 sender changeAddress lockedVal
+              let signedL2tx = signTx carolWalletSk lockTx
+
+              putStrLn $ renderTxWithUTxO utxoToCommit2 signedL2tx
+
+              send n4 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
+
+              waitMatch 10 n3 $ \v -> do
+                guard $ v ^? key "tag" == Just "SnapshotConfirmed"
+                guard $
+                  Aeson.toJSON signedL2tx
+                    `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
       _ <- concurrently hydraHead1 hydraHead2
       pure ()
   where
+    waitLockInHead1 var = do
+      lockDatum <- readTVarIO var
+      case lockDatum of
+        Nothing -> threadDelay 1 >> waitLockInHead1 var
+        Just d -> pure d
+
     vkAddress :: C.NetworkId -> C.VerificationKey C.PaymentKey -> C.Address C.ShelleyAddr
     vkAddress networkId vk =
       C.makeShelleyAddress networkId (C.PaymentCredentialByKey $ C.verificationKeyHash vk) C.NoStakeAddress
@@ -178,7 +209,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
           stakePools <- Backend.queryStakePools backend QueryTip
           case Backend.buildTransactionWithPParams' pparams systemStart eraHistory stakePools changeAddress utxo [] [scriptOutput] Nothing of
             Left e -> error $ show e
-            Right tx -> pure tx
+            Right tx -> pure (tx, invoice)
 
 main :: IO ()
 main = hspec $ around (showLogsOnFailure "spec") $ do
