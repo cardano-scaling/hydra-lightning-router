@@ -6,7 +6,7 @@ module Hydra.HTLC.BuildTx
 where
 
 import Cardano.Api qualified as C
-import Convex.BuildTx (MonadBuildTx, addRequiredSignature, payToScriptDatumHash, spendPlutus, addBtx)
+import Convex.BuildTx (MonadBuildTx, addBtx, addRequiredSignature, payToScriptDatumHash, spendPlutus)
 import Hydra.HTLC.Data qualified as HTLC
 import Hydra.HTLC.Embed (htlcValidatorScript)
 import PlutusTx.Prelude (BuiltinByteString)

@@ -5,9 +5,9 @@ module Main
   )
 where
 
-import Control.Monad.IO.Class (liftIO)
 import Cardano.Api qualified as C
-import Convex.BuildTx (execBuildTx)
+import Control.Monad.IO.Class (liftIO)
+import Convex.BuildTx (execBuildTx, mintPlutus)
 import Convex.Class (MonadMockchain, querySlotNo, setSlot)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
@@ -76,6 +76,14 @@ balanceAndRefundHTLC wallet ref datum lb pkh = inBabbage @era $ do
   let tx = execBuildTx $ refundHTLC ref datum lb pkh
   C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
 
+balanceAndMintNativeAsset ::
+  forall era m.
+  (MonadFail m, MonadMockchain era m, C.MonadError (BalanceTxError era) m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV1 era) => Wallet.Wallet ->
+  m C.TxId
+balanceAndMintNativeAsset wallet = inBabbage @era $ do
+  let tx = execBuildTx (mintPlutus (C.examplePlutusScriptAlwaysSucceeds C.WitCtxMint) () (C.UnsafeAssetName "deadbeef") 100)
+  C.getTxId . C.getTxBody <$> CoinSelection.tryBalanceAndSubmit mempty wallet tx TrailingChange []
+
 canSpendToHTLCScript :: Assertion
 canSpendToHTLCScript = do
   let sender = Wallet.address Defaults.networkId Wallet.w1
@@ -97,6 +105,29 @@ canClaimFromHTLCScript = do
   let ub = C.TxValidityUpperBound C.shelleyBasedEra $ Just sn
   let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
+
+    ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
+    balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
+
+canClaimNativeTokenFromHTLCScript :: Assertion
+canClaimNativeTokenFromHTLCScript = do
+  let sender = Wallet.address Defaults.networkId Wallet.w1
+  let recipient = Wallet.address Defaults.networkId Wallet.w2
+  let date = UTCTime (fromGregorian 2026 01 01) (secondsToDiffTime 0)
+  let script = C.examplePlutusScriptAlwaysSucceeds C.WitCtxMint
+  let policyId = C.PolicyId $ C.hashScript (C.PlutusScript C.PlutusScriptV1 script)
+  let assetName = C.UnsafeAssetName "deadbeef"
+  let assetId = C.AssetId policyId assetName
+  let mintedValue = C.valueFromList [(assetId, C.Quantity 100)]  
+  (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_200_000 <> mintedValue) date
+  let Just dat = standardInvoiceToHTLCDatum invoice sender
+  let Just pkh = shelleyPayAddrToPaymentKey recipient
+  let Right (sn, _, _) = utcTimeToSlot Defaults.eraHistory Defaults.systemStart date
+  let ub = C.TxValidityUpperBound C.shelleyBasedEra $ Just sn
+  let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
+  mockchainSucceeds $ failOnError $ do
+    balanceAndMintNativeAsset Wallet.w1
+    liftIO $ print $ I.amount invoice
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
     balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
 
@@ -123,7 +154,8 @@ tests =
         "payments"
         [ testCase "can spend to htlc script" canSpendToHTLCScript,
           testCase "can claim script output from htlc script" canClaimFromHTLCScript,
-          testCase "can refund script output from htlc script" canRefundFromHTLCScript
+          testCase "can refund script output from htlc script" canRefundFromHTLCScript,
+          testCase "can claim native token from htlc script" canClaimNativeTokenFromHTLCScript
         ]
     ]
 
