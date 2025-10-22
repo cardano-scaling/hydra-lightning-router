@@ -12,7 +12,13 @@
         packages = p: [ p.hydra-lightning-router ];
         buildInputs = [
           legacyPackages.cabal-install
+          inputs.cardano-node.packages.${system}.cardano-node
+          inputs.cardano-node.packages.${system}.cardano-cli
+          inputs.hydra.packages.${system}.hydra-node
         ];
+        shellHook = ''
+          export PATH="${inputs.hydra.packages.${system}.hydra-node}/bin:$PATH"
+        '';
       };
 
       inherit legacyPackages;

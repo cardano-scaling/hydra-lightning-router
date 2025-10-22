@@ -30,6 +30,7 @@ common lang
     DerivingStrategies
     GADTs
     ImportQualifiedPost
+    PatternSynonyms
     TypeData
     ViewPatterns
 
@@ -46,27 +47,37 @@ library
   hs-source-dirs:  src
   build-depends:
     , aeson
+    , async
     , base16-bytestring
     , bytestring
     , cardano-api
     , cardano-crypto-class
+    , cardano-ledger-core
+    , containers
     , convex-base
     , file-embed
+    , hydra-cardano-api
+    , hydra-cluster
     , hydra-invoices
+    , hydra-node
+    , hydra-test-utils
+    , hydra-tx
     , lens
     , lens-aeson
     , plutus-ledger-api
     , plutus-tx
+    , req
+    , stm
     , template-haskell
     , text
     , time
-    , websockets
 
 executable hydra-lightning-router
   import:         lang
   main-is:        Main.hs
   hs-source-dirs: app
   build-depends:  hydra-lightning-router
+  ghc-options:    -threaded -rtsopts
 
 test-suite hydra-lightning-router-tests
   import:         lang
@@ -81,6 +92,7 @@ test-suite hydra-lightning-router-tests
     , convex-coin-selection
     , convex-mockchain
     , convex-wallet
+    , flat
     , hydra-invoices
     , hydra-lightning-router
     , plutus-ledger-api
@@ -88,3 +100,5 @@ test-suite hydra-lightning-router-tests
     , tasty
     , tasty-hunit
     , time
+
+  ghc-options:    -threaded -rtsopts

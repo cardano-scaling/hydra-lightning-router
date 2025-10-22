@@ -19,6 +19,6 @@ standardInvoiceToHTLCDatum invoice sender = do
     HTLC.Datum
       { HTLC.hash = toBuiltin $ Crypto.hashToBytes $ I.fromPaymentId $ I.paymentId invoice,
         HTLC.receiver = b,
-        HTLC.timeout = V3.POSIXTime $ floor $ (utcTimeToPOSIXSeconds $ I.date invoice) * 1000,
+        HTLC.timeout = V3.POSIXTime $ floor $ utcTimeToPOSIXSeconds (I.date invoice) * 1000,
         HTLC.sender = c
       }

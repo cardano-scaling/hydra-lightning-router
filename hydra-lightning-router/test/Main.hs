@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Main
   ( main,
@@ -6,9 +7,9 @@ module Main
 where
 
 import Cardano.Api qualified as C
-import Control.Monad.IO.Class (liftIO)
+import Cardano.Api.HasTypeProxy
 import Convex.BuildTx (execBuildTx, mintPlutus)
-import Convex.Class (MonadMockchain, querySlotNo, setSlot)
+import Convex.Class (MonadMockchain, setSlot)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
@@ -16,6 +17,9 @@ import Convex.MockChain.Utils (mockchainSucceeds)
 import Convex.Utils (failOnError, inBabbage, utcTimeToSlot)
 import Convex.Wallet qualified as Wallet
 import Convex.Wallet.MockWallet qualified as Wallet
+import Data.ByteString qualified as BS
+import Data.ByteString.Convert ()
+import Data.Proxy (Proxy (..))
 import Data.Time (UTCTime (UTCTime), fromGregorian, secondsToDiffTime)
 import Hydra.HTLC.BuildTx (claimHTLC, payHTLC, refundHTLC)
 import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
@@ -25,6 +29,14 @@ import Hydra.Invoice qualified as I
 import PlutusTx.Prelude (BuiltinByteString, toBuiltin)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, testCase)
+
+instance HasTypeProxy BS.ByteString where
+  data AsType BS.ByteString = AsByteString
+  proxyToAsType _ = AsByteString
+
+instance C.SerialiseAsRawBytes BS.ByteString where
+  serialiseToRawBytes = id
+  deserialiseFromRawBytes AsByteString = pure
 
 balanceAndPayHTLC ::
   forall era m.
@@ -78,7 +90,8 @@ balanceAndRefundHTLC wallet ref datum lb pkh = inBabbage @era $ do
 
 balanceAndMintNativeAsset ::
   forall era m.
-  (MonadFail m, MonadMockchain era m, C.MonadError (BalanceTxError era) m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV1 era) => Wallet.Wallet ->
+  (MonadFail m, MonadMockchain era m, C.MonadError (BalanceTxError era) m, C.IsBabbageBasedEra era, C.HasScriptLanguageInEra C.PlutusScriptV1 era) =>
+  Wallet.Wallet ->
   m C.TxId
 balanceAndMintNativeAsset wallet = inBabbage @era $ do
   let tx = execBuildTx (mintPlutus (C.examplePlutusScriptAlwaysSucceeds C.WitCtxMint) () (C.UnsafeAssetName "deadbeef") 100)
@@ -105,7 +118,6 @@ canClaimFromHTLCScript = do
   let ub = C.TxValidityUpperBound C.shelleyBasedEra $ Just sn
   let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
-
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
     balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
 
@@ -118,7 +130,7 @@ canClaimNativeTokenFromHTLCScript = do
   let policyId = C.PolicyId $ C.hashScript (C.PlutusScript C.PlutusScriptV1 script)
   let assetName = C.UnsafeAssetName "deadbeef"
   let assetId = C.AssetId policyId assetName
-  let mintedValue = C.valueFromList [(assetId, C.Quantity 100)]  
+  let mintedValue = C.valueFromList [(assetId, C.Quantity 100)]
   (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_200_000 <> mintedValue) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
   let Just pkh = shelleyPayAddrToPaymentKey recipient
@@ -127,7 +139,7 @@ canClaimNativeTokenFromHTLCScript = do
   let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
     balanceAndMintNativeAsset Wallet.w1
-    liftIO $ print $ I.amount invoice
+    C.liftIO $ print $ I.amount invoice
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
     balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
 
