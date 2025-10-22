@@ -16,12 +16,12 @@ import Control.Exception (finally)
 import Control.Lens (contramap, (&), (^..), (^?))
 import Control.Monad (guard)
 import Data.Aeson qualified as Aeson
-import Data.Aeson.Lens (key, values)
+import Data.Aeson.Lens (key, values, _JSON)
 import Data.Bifunctor (second)
 import Data.ByteString qualified as BS
 import Data.Proxy (Proxy (Proxy))
 import Data.Set qualified as Set
-import Data.Time (addUTCTime)
+import Data.Time (addUTCTime, diffUTCTime)
 import Data.Time.Clock.POSIX (getCurrentTime)
 import GHC.Conc (atomically, TVar)
 import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx))
@@ -76,9 +76,10 @@ import HydraNode
   ( getProtocolParameters,
     getSnapshotUTxO,
     input,
-    requestCommitTx,
     send,
     waitMatch,
+    waitFor,
+    output,
     withHydraNode,
   )
 import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
@@ -134,13 +135,16 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
       (bobWalletVk, bobWalletSk) <- keysFor BobFunds
       (carolWalletVk, carolWalletSk) <- keysFor CarolFunds
 
+      -- Used to signal when the claiming process has finished in the opposite Head
       head1Var <- newTVarIO Nothing
       head2Var <- newTVarIO Nothing
+
       let lockedVal = C.lovelaceToValue 5_000_000
 
-      let hydraHead1 = withHydraNode hydraTracer aliceChainConfig workDir 1 aliceSk [carolVk] [1, 2] $ \n1 ->
+      let head1 = withHydraNode hydraTracer aliceChainConfig workDir 1 aliceSk [carolVk] [1, 2] $ \n1 ->
             withHydraNode hydraTracer carolChainConfig workDir 2 carolSk [aliceVk] [1, 2] $ \n2 -> do
               utxoToCommit <- seedFromFaucet backend aliceWalletVk (C.lovelaceToValue 12_000_000) (contramap FromFaucet tracer)
+              utxoToCommitCarol <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
               send n1 $ input "Init" []
               headId <- waitMatch (20 * blockTime) n1 $ headIsInitializingWith (Set.fromList [alice, carol])
 
@@ -155,21 +159,36 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
               let DraftCommitTxResponse {commitTx} = responseBody res
               Backend.submitTransaction backend $ signTx aliceWalletSk commitTx
+              res2 <-
+                runReq defaultHttpConfig $
+                  req
+                    POST
+                    (http "127.0.0.1" /: "commit")
+                    (Req.ReqBodyJson utxoToCommitCarol)
+                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
+                    (port $ 4000 + 2)
 
-              requestCommitTx n2 mempty >>= Backend.submitTransaction backend
+              let DraftCommitTxResponse {commitTx = commitTxCarol} = responseBody res2
+              Backend.submitTransaction backend $ signTx carolWalletSk commitTxCarol
 
-              aliceHeadUTxO <- waitMatch (20 * blockTime) n1 $ \v -> do
+              headUTxO <- waitMatch (20 * blockTime) n1 $ \v -> do
                 guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
                 guard $ v ^? key "tag" == Just "HeadIsOpen"
                 pure $ v ^? key "utxo"
-              aliceHeadUTxO `shouldBe` Just (Aeson.toJSON utxoToCommit)
+              headUTxO `shouldBe` Just (Aeson.toJSON $ utxoToCommit <> utxoToCommitCarol)
+
               pparams <- getProtocolParameters n1
               let sender = vkAddress networkId aliceWalletVk
               let recipient = vkAddress networkId bobWalletVk
               let changeAddress = mkVkAddress networkId aliceWalletVk
               (invoice, preImage) <- generateInvoice recipient lockedVal
-              (lockTx, _) <- buildLockTx pparams networkId invoice utxoToCommit sender changeAddress lockedVal
+              let updatedInvoice = 
+                    invoice {I.recipient = vkAddress networkId carolWalletVk }
+
+              (lockTx, _) <- buildLockTx pparams networkId updatedInvoice utxoToCommit sender changeAddress lockedVal
+
               let signedL2tx = signTx aliceWalletSk lockTx
+
               send n1 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
 
               waitMatch 10 n2 $ \v -> do
@@ -177,17 +196,66 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                 guard $
                   Aeson.toJSON signedL2tx
                     `elem` (v ^.. key "snapshot" . key "confirmed" . values)
+
+              -- NOTIFY Head2 to start the claim
               atomically $ writeTVar head1Var (Just (invoice, preImage))
 
-      let hydraHead2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
+              -- WAITING on Claim tx in Head 2
+              (_invoice', preImage') <- waitLockInHead head2Var
+
+              -- CLAIM TX
+              headUTxO' <- getSnapshotUTxO n2
+              let claimUTxO = C.filter (\(TxOut _ v _ _) -> v == lockedVal) headUTxO'
+              let headUTxOWithoutClaim = C.filter (\(TxOut a _ _ _) -> a == mkVkAddress networkId carolWalletVk) headUTxO'
+
+              let claimRecipient =
+                    C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId carolWalletVk)
+              let expectedKeyHashes = [C.verificationKeyHash carolWalletVk]
+              let collateral = head $ Set.toList $ C.inputSet headUTxOWithoutClaim
+
+              claimTx <- buildClaimTX pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headUTxOWithoutClaim collateral changeAddress
+
+              let signedClaimTx = signTx carolWalletSk claimTx
+
+              send n2 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
+
+              waitMatch 20 n1 $ \v -> do
+                guard $ v ^? key "tag" == Just "SnapshotConfirmed"
+                guard $
+                  Aeson.toJSON signedClaimTx
+                    `elem` (v ^.. key "snapshot" . key "confirmed" . values)
+
+              send n1 $ input "Close" []
+              deadline <- waitMatch (20 * blockTime) n1 $ \v -> do
+                guard $ v ^? key "tag" == Just "HeadIsClosed"
+                v ^? key "contestationDeadline" . _JSON
+              remainingTime <- diffUTCTime deadline <$> getCurrentTime
+              waitFor hydraTracer (remainingTime + 20 * blockTime) [n1] $
+                output "ReadyToFanout" ["headId" Aeson..= headId]
+              send n1 $ input "Fanout" []
+              waitMatch (20 * blockTime) n1 $ \v ->
+                guard $ v ^? key "tag" == Just "HeadIsFinalized"
+
+      let head2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
             withHydraNode hydraTracer carolChainConfig2 workDir2 4 carolSk [bobVk] [3, 4] $ \n4 -> do
               carolUTxO <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 14_000_000) (contramap FromFaucet tracer)
+              bobUTxO <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
               send n3 $ input "Init" []
               headId <- waitMatch (20 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
 
-              requestCommitTx n3 mempty >>= Backend.submitTransaction backend
-
               res <-
+                runReq defaultHttpConfig $
+                  req
+                    POST
+                    (http "127.0.0.1" /: "commit")
+                    (Req.ReqBodyJson bobUTxO)
+                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
+                    (port $ 4000 + 3)
+
+              let DraftCommitTxResponse {commitTx = commitTxBob} = responseBody res
+              Backend.submitTransaction backend $ signTx bobWalletSk commitTxBob
+
+              res2 <-
                 runReq defaultHttpConfig $
                   req
                     POST
@@ -196,16 +264,19 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                     (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
                     (port $ 4000 + 4)
 
-              let DraftCommitTxResponse {commitTx = commitTxCarol} = responseBody res
+              let DraftCommitTxResponse {commitTx = commitTxCarol} = responseBody res2
               Backend.submitTransaction backend $ signTx carolWalletSk commitTxCarol
 
               headUTxO <- waitMatch (20 * blockTime) n3 $ \v -> do
                 guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
                 guard $ v ^? key "tag" == Just "HeadIsOpen"
                 pure $ v ^? key "utxo"
-              headUTxO `shouldBe` Just (Aeson.toJSON carolUTxO)
+              headUTxO `shouldBe` Just (Aeson.toJSON $ bobUTxO <> carolUTxO)
 
-              (invoice, preImage) <- waitLockInHead1 head1Var
+              -- WAITING on Lock tx in Head 1 
+              (invoice, preImage) <- waitLockInHead head1Var
+
+              -- LOCK TX 
               pparams <- getProtocolParameters n4
               let sender = vkAddress networkId carolWalletVk
               let changeAddress = mkVkAddress networkId carolWalletVk
@@ -220,9 +291,10 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                   Aeson.toJSON signedL2tx
                     `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
+              -- CLAIM TX 
               headUTxO' <- getSnapshotUTxO n4
               let claimUTxO = C.filter (\(TxOut _ v _ _) -> v == lockedVal) headUTxO'
-              let headUTxOWithoutClaim = C.filter (\(TxOut _ v _ _) -> v /= lockedVal) headUTxO'
+              let headUTxOWithoutClaim = C.filter (\(TxOut a _ _ _) -> a == mkVkAddress networkId bobWalletVk) headUTxO'
 
               let claimRecipient =
                     C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId bobWalletVk)
@@ -231,7 +303,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
               claimTx <- buildClaimTX pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headUTxOWithoutClaim collateral changeAddress
 
-              let signedClaimTx = signTx bobWalletSk $ signTx carolWalletSk claimTx
+              let signedClaimTx = signTx bobWalletSk claimTx
 
               send n3 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
 
@@ -241,15 +313,31 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                   Aeson.toJSON signedClaimTx
                     `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
-      _ <- concurrently hydraHead1 hydraHead2
+              -- NOTIFY Head1 to start the claim
+              atomically $ writeTVar head2Var (Just (invoice, preImage))
+
+              send n3 $ input "Close" []
+              deadline <- waitMatch (20 * blockTime) n3 $ \v -> do
+                guard $ v ^? key "tag" == Just "HeadIsClosed"
+                v ^? key "contestationDeadline" . _JSON
+              remainingTime <- diffUTCTime deadline <$> getCurrentTime
+              waitFor hydraTracer (remainingTime + 20 * blockTime) [n3] $
+                output "ReadyToFanout" ["headId" Aeson..= headId]
+              send n3 $ input "Fanout" []
+              waitMatch (20 * blockTime) n3 $ \v ->
+                guard $ v ^? key "tag" == Just "HeadIsFinalized"
+
+     -- Run two heads in parallel
+      _ <- concurrently head1 head2
       pure ()
   where
-    waitLockInHead1 :: TVar (Maybe b) -> IO b
-    waitLockInHead1 var = do
+    waitLockInHead :: TVar (Maybe b) -> IO b
+    waitLockInHead var = do
       lockDatum <- readTVarIO var
       case lockDatum of
-        Nothing -> threadDelay 1 >> waitLockInHead1 var
+        Nothing -> threadDelay 1 >> waitLockInHead var
         Just d -> pure d
+
 
     vkAddress :: C.NetworkId -> C.VerificationKey C.PaymentKey -> C.Address C.ShelleyAddr
     vkAddress networkId vk =
