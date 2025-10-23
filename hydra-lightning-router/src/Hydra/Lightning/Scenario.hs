@@ -81,6 +81,7 @@ import HydraNode
     waitFor,
     output,
     withHydraNode,
+    withConnectionToNode,
   )
 import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
 import Network.HTTP.Req qualified as Req
@@ -141,8 +142,8 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
       let lockedVal = C.lovelaceToValue 5_000_000
 
-      let head1 = withHydraNode hydraTracer aliceChainConfig workDir 1 aliceSk [carolVk] [1, 2] $ \n1 ->
-            withHydraNode hydraTracer carolChainConfig workDir 2 carolSk [aliceVk] [1, 2] $ \n2 -> do
+      let head1 = withConnectionToNode hydraTracer 1 $ \n1 ->
+            withConnectionToNode hydraTracer 2 $ \n2 -> do
               utxoToCommit <- seedFromFaucet backend aliceWalletVk (C.lovelaceToValue 12_000_000) (contramap FromFaucet tracer)
               utxoToCommitCarol <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
               send n1 $ input "Init" []
@@ -236,8 +237,8 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
               waitMatch (20 * blockTime) n1 $ \v ->
                 guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
-      let head2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
-            withHydraNode hydraTracer carolChainConfig2 workDir2 4 carolSk [bobVk] [3, 4] $ \n4 -> do
+      let head2 = withConnectionToNode hydraTracer 3 $ \n3 ->
+            withConnectionToNode hydraTracer 4 $ \n4 -> do
               carolUTxO <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 14_000_000) (contramap FromFaucet tracer)
               bobUTxO <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
               send n3 $ input "Init" []
