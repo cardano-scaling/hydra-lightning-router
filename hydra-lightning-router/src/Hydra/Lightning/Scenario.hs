@@ -6,6 +6,9 @@ module Hydra.Lightning.Scenario (main) where
 
 import Cardano.Api qualified as C
 import Cardano.Api.UTxO qualified as C
+import Cardano.Api.UTxO qualified as UTxO
+import Cardano.Ledger.BaseTypes qualified as Ledger
+import Cardano.Ledger.Credential qualified as Ledger
 import Cardano.Ledger.Plutus.Language (Language (PlutusV3))
 import CardanoClient (QueryPoint (QueryTip))
 import CardanoNode (withCardanoNodeDevnet)
@@ -19,31 +22,44 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens (key, values, _JSON)
 import Data.Bifunctor (second)
 import Data.ByteString qualified as BS
+import Data.Functor ((<&>))
+import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 import Data.Set qualified as Set
 import Data.Time (addUTCTime, diffUTCTime)
 import Data.Time.Clock.POSIX (getCurrentTime)
-import GHC.Conc (atomically, TVar)
+import GHC.Conc (TVar, atomically)
+import GHC.IsList (toList)
 import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx))
 import Hydra.Cardano.Api
   ( Era,
     Tx,
+    TxOut,
+    UTxO,
     balancedTxBody,
     defaultTxBodyContent,
     fromLedgerTx,
+    fromLedgerTxOut,
     mkScriptAddress,
     mkTxOutDatumInline,
     mkVkAddress,
     signTx,
     toLedgerTx,
     toScriptData,
+    txOutReferenceScript,
+    txOutValue,
+    pattern ByronAddressInEra,
+    pattern PlutusScript,
     pattern PlutusScriptWitness,
+    pattern ShelleyAddress,
+    pattern ShelleyAddressInEra,
     pattern Tx,
     pattern TxOut,
   )
 import Hydra.Chain.Backend (ChainBackend)
 import Hydra.Chain.Backend qualified as Backend
-import Hydra.Cluster.Faucet (seedFromFaucet)
+import Hydra.Cluster.Faucet (seedFromFaucet, seedFromFaucetWithMinting)
 import Hydra.Cluster.Faucet qualified as Faucet
 import Hydra.Cluster.Fixture
   ( Actor (Alice, AliceFunds, Bob, BobFunds, Carol, CarolFunds, Faucet),
@@ -65,6 +81,7 @@ import Hydra.Cluster.Scenarios
     returnFundsToFaucet,
   )
 import Hydra.Cluster.Util (chainConfigFor, keysFor)
+import Hydra.Contract.Dummy (dummyMintingScript)
 import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
 import Hydra.HTLC.Data (Redeemer (Claim))
 import Hydra.HTLC.Embed (htlcValidatorScript)
@@ -76,16 +93,17 @@ import HydraNode
   ( getProtocolParameters,
     getSnapshotUTxO,
     input,
-    send,
-    waitMatch,
-    waitFor,
     output,
+    send,
+    waitFor,
+    waitMatch,
     withHydraNode,
   )
 import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
 import Network.HTTP.Req qualified as Req
 import PlutusTx.Builtins (toBuiltin)
 import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe, withTempDir)
+import Test.QuickCheck (Gen, arbitrary, generate, suchThat)
 
 instance C.HasTypeProxy BS.ByteString where
   data AsType BS.ByteString = AsByteString
@@ -138,12 +156,22 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
       -- Used to signal when the claiming process has finished in the opposite Head
       head1Var <- newTVarIO Nothing
       head2Var <- newTVarIO Nothing
-
-      let lockedVal = C.lovelaceToValue 5_000_000
-
+      tokensUTxO <- generate (genFungibleAsset (C.Quantity 5) (Just $ C.PolicyId $ C.hashScript $ PlutusScript dummyMintingScript))
+      let totalTokenValue = UTxO.totalValue tokensUTxO
+      let tokenAssets = C.valueToPolicyAssets totalTokenValue
+      let assetsToValue = foldMap ((mempty <>) . uncurry C.policyAssetsToValue) . Map.toList
+      let tokenAssetValue = assetsToValue tokenAssets
+      let lockedVal = C.lovelaceToValue 5_000_000 <> tokenAssetValue
+      utxoToCommitAlice <-
+        seedFromFaucetWithMinting
+          backend
+          aliceWalletVk
+          (C.lovelaceToValue 12_000_000 <> tokenAssetValue)
+          (contramap FromFaucet tracer)
+          (Just dummyMintingScript)
+      carolUTxO <- seedFromFaucetWithMinting backend carolWalletVk (C.lovelaceToValue 14_000_000 <> tokenAssetValue) (contramap FromFaucet tracer) (Just dummyMintingScript)
       let head1 = withHydraNode hydraTracer aliceChainConfig workDir 1 aliceSk [carolVk] [1, 2] $ \n1 ->
             withHydraNode hydraTracer carolChainConfig workDir 2 carolSk [aliceVk] [1, 2] $ \n2 -> do
-              utxoToCommit <- seedFromFaucet backend aliceWalletVk (C.lovelaceToValue 12_000_000) (contramap FromFaucet tracer)
               utxoToCommitCarol <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
               send n1 $ input "Init" []
               headId <- waitMatch (20 * blockTime) n1 $ headIsInitializingWith (Set.fromList [alice, carol])
@@ -153,7 +181,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                   req
                     POST
                     (http "127.0.0.1" /: "commit")
-                    (Req.ReqBodyJson utxoToCommit)
+                    (Req.ReqBodyJson utxoToCommitAlice)
                     (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
                     (port $ 4000 + 1)
 
@@ -175,18 +203,16 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                 guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
                 guard $ v ^? key "tag" == Just "HeadIsOpen"
                 pure $ v ^? key "utxo"
-              headUTxO `shouldBe` Just (Aeson.toJSON $ utxoToCommit <> utxoToCommitCarol)
+              headUTxO `shouldBe` Just (Aeson.toJSON $ utxoToCommitAlice <> utxoToCommitCarol)
 
               pparams <- getProtocolParameters n1
               let sender = vkAddress networkId aliceWalletVk
               let recipient = vkAddress networkId bobWalletVk
               let changeAddress = mkVkAddress networkId aliceWalletVk
               (invoice, preImage) <- generateInvoice recipient lockedVal
-              let updatedInvoice = 
-                    invoice {I.recipient = vkAddress networkId carolWalletVk }
-
-              (lockTx, _) <- buildLockTx pparams networkId updatedInvoice utxoToCommit sender changeAddress lockedVal
-
+              let updatedInvoice =
+                    invoice {I.recipient = vkAddress networkId carolWalletVk}
+              (lockTx, _) <- buildLockTx pparams networkId updatedInvoice utxoToCommitAlice sender changeAddress lockedVal
               let signedL2tx = signTx aliceWalletSk lockTx
 
               send n1 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
@@ -205,21 +231,21 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 
               -- CLAIM TX
               headUTxO' <- getSnapshotUTxO n2
-              let claimUTxO = C.filter (\(TxOut _ v _ _) -> v == lockedVal) headUTxO'
-              let headUTxOWithoutClaim = C.filter (\(TxOut a _ _ _) -> a == mkVkAddress networkId carolWalletVk) headUTxO'
+              let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
+              let headCollateral = C.filter (\(TxOut a _ _ _) -> a /= mkScriptAddress networkId htlcValidatorScript) headUTxO'
 
               let claimRecipient =
                     C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId carolWalletVk)
               let expectedKeyHashes = [C.verificationKeyHash carolWalletVk]
-              let collateral = head $ Set.toList $ C.inputSet headUTxOWithoutClaim
+              let collateral = head $ Set.toList $ C.inputSet headCollateral
 
-              claimTx <- buildClaimTX pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headUTxOWithoutClaim collateral changeAddress
-
-              let signedClaimTx = signTx carolWalletSk claimTx
+              claimTx <- buildClaimTX pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral changeAddress
+              -- We only need Alice sig for collateral input
+              let signedClaimTx = signTx aliceWalletSk $ signTx carolWalletSk claimTx
 
               send n2 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
 
-              waitMatch 20 n1 $ \v -> do
+              waitMatch 20 n2 $ \v -> do
                 guard $ v ^? key "tag" == Just "SnapshotConfirmed"
                 guard $
                   Aeson.toJSON signedClaimTx
@@ -230,15 +256,17 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                 guard $ v ^? key "tag" == Just "HeadIsClosed"
                 v ^? key "contestationDeadline" . _JSON
               remainingTime <- diffUTCTime deadline <$> getCurrentTime
+
               waitFor hydraTracer (remainingTime + 20 * blockTime) [n1] $
                 output "ReadyToFanout" ["headId" Aeson..= headId]
+
               send n1 $ input "Fanout" []
+
               waitMatch (20 * blockTime) n1 $ \v ->
                 guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
       let head2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
             withHydraNode hydraTracer carolChainConfig2 workDir2 4 carolSk [bobVk] [3, 4] $ \n4 -> do
-              carolUTxO <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 14_000_000) (contramap FromFaucet tracer)
               bobUTxO <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
               send n3 $ input "Init" []
               headId <- waitMatch (20 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
@@ -273,37 +301,36 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
                 pure $ v ^? key "utxo"
               headUTxO `shouldBe` Just (Aeson.toJSON $ bobUTxO <> carolUTxO)
 
-              -- WAITING on Lock tx in Head 1 
+              -- WAITING on Lock tx in Head 1
               (invoice, preImage) <- waitLockInHead head1Var
 
-              -- LOCK TX 
+              -- LOCK TX
               pparams <- getProtocolParameters n4
               let sender = vkAddress networkId carolWalletVk
               let changeAddress = mkVkAddress networkId carolWalletVk
+
               (lockTx, _) <- buildLockTx pparams networkId invoice carolUTxO sender changeAddress lockedVal
               let signedL2tx = signTx carolWalletSk lockTx
 
               send n4 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
 
-              waitMatch 10 n3 $ \v -> do
+              waitMatch 10 n4 $ \v -> do
                 guard $ v ^? key "tag" == Just "SnapshotConfirmed"
                 guard $
                   Aeson.toJSON signedL2tx
                     `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
-              -- CLAIM TX 
-              headUTxO' <- getSnapshotUTxO n4
-              let claimUTxO = C.filter (\(TxOut _ v _ _) -> v == lockedVal) headUTxO'
-              let headUTxOWithoutClaim = C.filter (\(TxOut a _ _ _) -> a == mkVkAddress networkId bobWalletVk) headUTxO'
-
+              -- CLAIM TX
+              headUTxO' <- getSnapshotUTxO n3
+              let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
+              let headCollateral = C.filter (\(TxOut a _ _ _) -> a /= mkScriptAddress networkId htlcValidatorScript) headUTxO'
               let claimRecipient =
                     C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId bobWalletVk)
               let expectedKeyHashes = [C.verificationKeyHash bobWalletVk]
-              let collateral = head $ Set.toList $ C.inputSet headUTxOWithoutClaim
+              let collateral = head $ Set.toList $ C.inputSet headCollateral
 
-              claimTx <- buildClaimTX pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headUTxOWithoutClaim collateral changeAddress
-
-              let signedClaimTx = signTx bobWalletSk claimTx
+              claimTx <- buildClaimTX pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral changeAddress
+              let signedClaimTx = signTx carolWalletSk $ signTx bobWalletSk claimTx
 
               send n3 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
 
@@ -317,17 +344,20 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
               atomically $ writeTVar head2Var (Just (invoice, preImage))
 
               send n3 $ input "Close" []
+
               deadline <- waitMatch (20 * blockTime) n3 $ \v -> do
                 guard $ v ^? key "tag" == Just "HeadIsClosed"
                 v ^? key "contestationDeadline" . _JSON
               remainingTime <- diffUTCTime deadline <$> getCurrentTime
               waitFor hydraTracer (remainingTime + 20 * blockTime) [n3] $
                 output "ReadyToFanout" ["headId" Aeson..= headId]
+
               send n3 $ input "Fanout" []
+
               waitMatch (20 * blockTime) n3 $ \v ->
                 guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
-     -- Run two heads in parallel
+      -- Run two heads in parallel
       _ <- concurrently head1 head2
       pure ()
   where
@@ -337,7 +367,6 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
       case lockDatum of
         Nothing -> threadDelay 1 >> waitLockInHead var
         Just d -> pure d
-
 
     vkAddress :: C.NetworkId -> C.VerificationKey C.PaymentKey -> C.Address C.ShelleyAddr
     vkAddress networkId vk =
@@ -421,6 +450,62 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
         Left e -> error $ show e
         Right tx ->
           pure $ fromLedgerTx @Era $ recomputeIntegrityHash pparams [PlutusV3] (toLedgerTx tx)
+
+-- ASSET GENERATION
+genFungibleAsset :: C.Quantity -> Maybe C.PolicyId -> Gen UTxO
+genFungibleAsset quantity pid =
+  UTxO.singleton <$> arbitrary <*> genTxOutWithAssets quantity pid
+
+genTxOutWithAssets :: C.Quantity -> Maybe C.PolicyId -> Gen (TxOut ctx)
+genTxOutWithAssets q pid =
+  ((fromLedgerTxOut <$> arbitrary) `suchThat` notByronAddress)
+    <&> singleAsset q . noNegativeAssetsWithPotentialPolicy pid . noRefScripts . noStakeRefPtr
+
+singleAsset :: C.Quantity -> TxOut ctx -> TxOut ctx
+singleAsset wantedQuantity (TxOut addr val dat refScript) =
+  let (pid, C.PolicyAssets assets) = head $ Map.assocs $ C.valueToPolicyAssets val
+      (name, _) = head $ Map.assocs assets
+      singleEntry = Map.singleton name wantedQuantity
+      newVal = C.policyAssetsToValue pid (C.PolicyAssets singleEntry)
+   in TxOut addr newVal dat refScript
+
+noStakeRefPtr :: TxOut ctx -> TxOut ctx
+noStakeRefPtr out@(TxOut addr val dat refScript) = case addr of
+  ShelleyAddressInEra (ShelleyAddress _ cre sr) ->
+    case sr of
+      Ledger.StakeRefPtr _ ->
+        TxOut (ShelleyAddressInEra (ShelleyAddress Ledger.Testnet cre Ledger.StakeRefNull)) val dat refScript
+      _ ->
+        TxOut (ShelleyAddressInEra (ShelleyAddress Ledger.Testnet cre sr)) val dat refScript
+  _ -> out
+
+notByronAddress :: TxOut ctx -> Bool
+notByronAddress (C.TxOut addr _ _ _) = case addr of
+  ByronAddressInEra {} -> False
+  _ -> True
+
+noRefScripts :: TxOut ctx -> TxOut ctx
+noRefScripts out =
+  out {txOutReferenceScript = C.ReferenceScriptNone}
+
+noNegativeAssetsWithPotentialPolicy :: Maybe C.PolicyId -> TxOut ctx -> TxOut ctx
+noNegativeAssetsWithPotentialPolicy mpid out =
+  let val = txOutValue out
+      nonAdaAssets =
+        Map.foldrWithKey
+          (\pid policyAssets def -> C.policyAssetsToValue (fromMaybe pid mpid) policyAssets <> def)
+          mempty
+          (filterNegativeVals (C.valueToPolicyAssets val))
+      ada = C.selectLovelace val
+   in out {txOutValue = C.lovelaceToValue ada <> nonAdaAssets}
+  where
+    filterNegativeVals =
+      Map.filterWithKey
+        ( \pid passets ->
+            all
+              (\(_, C.Quantity n) -> n > 0)
+              (toList $ C.policyAssetsToValue pid passets)
+        )
 
 main :: IO ()
 main = hspec $ around (showLogsOnFailure "spec") $ do
