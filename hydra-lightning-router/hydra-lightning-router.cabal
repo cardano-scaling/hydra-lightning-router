@@ -60,12 +60,14 @@ library
     , hydra-cluster
     , hydra-invoices
     , hydra-node
+    , hydra-plutus
     , hydra-test-utils
     , hydra-tx
     , lens
     , lens-aeson
     , plutus-ledger-api
     , plutus-tx
+    , QuickCheck
     , req
     , stm
     , template-haskell
