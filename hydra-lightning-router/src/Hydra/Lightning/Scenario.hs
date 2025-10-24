@@ -328,23 +328,41 @@ singlePartyCommitsFromExternal tracer backend hydraScriptsTxId = do
       pure (invoice, preImage)
 
     buildLockTx pparams networkId invoice utxo sender changeAddress val = do
-      let scriptAddress = mkScriptAddress networkId htlcValidatorScript
-      case standardInvoiceToHTLCDatum invoice sender of
-        Nothing -> error "Failed to generate Datum for Invoice"
-        Just dat -> do
-          let scriptOutput =
-                TxOut
-                  scriptAddress
-                  val
-                  (mkTxOutDatumInline dat)
-                  C.ReferenceScriptNone
+        let scriptAddress = mkScriptAddress networkId htlcValidatorScript
+        case standardInvoiceToHTLCDatum invoice sender of
+          Nothing -> error "Failed to generate Datum for Invoice"
+          Just dat -> do
+            let scriptOutput =
+                  TxOut
+                    scriptAddress
+                    val
+                    (mkTxOutDatumInline dat)
+                    C.ReferenceScriptNone
 
-          systemStart <- Backend.querySystemStart backend QueryTip
-          eraHistory <- Backend.queryEraHistory backend QueryTip
-          stakePools <- Backend.queryStakePools backend QueryTip
-          case Backend.buildTransactionWithPParams' pparams systemStart eraHistory stakePools changeAddress utxo [] [scriptOutput] Nothing of
-            Left e -> error $ show e
-            Right tx -> pure tx
+            systemStart <- Backend.querySystemStart backend QueryTip
+            eraHistory <- Backend.queryEraHistory backend QueryTip
+            stakePools <- Backend.queryStakePools backend QueryTip
+
+            let bodyContent =
+                  defaultTxBodyContent
+                    & C.addTxIns (map (\i -> (i, C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending)) (Set.toList $ C.inputSet utxo))
+                    & C.addTxOuts [scriptOutput]
+
+            case C.makeTransactionBodyAutoBalance
+                   C.shelleyBasedEra
+                   systemStart
+                   (C.toLedgerEpochInfo eraHistory)
+                   (C.LedgerProtocolParameters pparams)
+                   stakePools
+                   mempty
+                   mempty
+                   utxo
+                   bodyContent
+                   changeAddress
+                   Nothing of
+              Left e -> error $ show e
+              Right tx -> pure $ flip Tx [] $ balancedTxBody tx
+
 
     buildClaimTX pparams preImage recipient expectedKeyHashes val claimUTxO collateralUTxO collateral changeAddress = do
       let maxTxExecutionUnits =
