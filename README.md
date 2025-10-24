@@ -1,8 +1,27 @@
 # hydra-lightning-router
 
 Demonstration of routing a payment between two hydra heads using the
-[htlc](https://github.com/cardano-scaling/htlc) validator.
+[htlc](https://github.com/cardano-scaling/htlc) validator and the
+[invoice](https://github.com/cardano-scaling/hydra-invoices) representation.
 
+![](image.png)
+
+This is an implementation of [HTLC across two Hydra
+Heads](https://github.com/cardano-scaling/hydra/issues/2080) and, for a setup
+with:
+
+- Alice in Head 1
+- Bob in Head 2
+- Ida in Head 1 _and_ Head 2
+
+demonstrates:
+
+1. Transferring Ada between Alice and Bob via a HTLC,
+2. Transferring a CNT between Alice and Bob, via a HTLC.
+
+## Demo
+
+- [Video](TBA)
 
 ## Running
 
@@ -14,7 +33,7 @@ nix run .#demo
 cabal run hydra-lightning-router
 ```
 
-## Smoke Tests
+## Tests
 
 ```
 nix develop
