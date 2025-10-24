@@ -114,7 +114,7 @@ instance C.SerialiseAsRawBytes BS.ByteString where
   deserialiseFromRawBytes AsByteString = pure
 
 -- | Single hydra-node where the commit is done using some wallet UTxO.
-singlePartyCommitsFromExternal ::
+aliceBobIdaTransferAcrossHeads ::
   (ChainBackend backend) =>
   Tracer IO EndToEndLog ->
   FilePath ->
@@ -122,7 +122,7 @@ singlePartyCommitsFromExternal ::
   backend ->
   [C.TxId] ->
   IO ()
-singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId =
+aliceBobIdaTransferAcrossHeads tracer workDir workDir2 backend hydraScriptsTxId =
   ( `finally`
       do
         returnFundsToFaucet tracer backend Alice
@@ -515,4 +515,4 @@ main = hspec $ around (showLogsOnFailure "spec") $ do
         withTempDir "hydra-head-2" $ \tmpDir2 -> do
           withCardanoNodeDevnet (contramap FromCardanoNode tracer) tmpDir $ \_ backend -> do
             x <- Faucet.publishHydraScriptsAs backend Faucet
-            singlePartyCommitsFromExternal tracer tmpDir tmpDir2 backend x
+            aliceBobIdaTransferAcrossHeads tracer tmpDir tmpDir2 backend x
