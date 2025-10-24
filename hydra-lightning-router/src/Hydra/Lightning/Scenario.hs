@@ -8,10 +8,12 @@ import Cardano.Api qualified as C
 import Cardano.Api.UTxO qualified as C
 import Cardano.Ledger.Plutus.Language (Language (PlutusV3))
 import CardanoClient (QueryPoint (QueryTip))
+import Hydra.Options (DirectOptions (..))
 import CardanoNode (withCardanoNodeDevnet)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently)
 import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO, writeTVar)
+import Hydra.Tx (Party(..))
 import Control.Exception (finally)
 import Control.Lens (contramap, (&), (^..), (^?))
 import Control.Monad (guard)
@@ -46,23 +48,11 @@ import Hydra.Chain.Backend qualified as Backend
 import Hydra.Cluster.Faucet (seedFromFaucet)
 import Hydra.Cluster.Faucet qualified as Faucet
 import Hydra.Cluster.Fixture
-  ( Actor (Alice, AliceFunds, Bob, BobFunds, Carol, CarolFunds, Faucet),
-    alice,
-    aliceSk,
-    aliceVk,
-    bob,
-    bobSk,
-    bobVk,
-    carol,
-    carolSk,
-    carolVk,
-  )
+  ( Actor (Faucet))
 import Hydra.Cluster.Scenarios
   ( EndToEndLog (FromCardanoNode, FromFaucet, FromHydraNode),
     headIsInitializingWith,
     recomputeIntegrityHash,
-    refuelIfNeeded,
-    returnFundsToFaucet,
   )
 import Hydra.Cluster.Util (chainConfigFor, keysFor)
 import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
@@ -87,6 +77,8 @@ import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, respon
 import Network.HTTP.Req qualified as Req
 import PlutusTx.Builtins (toBuiltin)
 import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe, withTempDir)
+import Hydra.Node.Util (readFileTextEnvelopeThrow)
+import Hydra.Chain.Direct (DirectBackend(..))
 
 instance C.HasTypeProxy BS.ByteString where
   data AsType BS.ByteString = AsByteString
@@ -98,44 +90,30 @@ instance C.SerialiseAsRawBytes BS.ByteString where
 
 -- | Single hydra-node where the commit is done using some wallet UTxO.
 singlePartyCommitsFromExternal ::
-  (ChainBackend backend) =>
   Tracer IO EndToEndLog ->
-  FilePath ->
-  FilePath ->
-  backend ->
+  DirectBackend ->
   [C.TxId] ->
   IO ()
-singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId =
-  ( `finally`
-      do
-        returnFundsToFaucet tracer backend Alice
-        returnFundsToFaucet tracer backend AliceFunds
-  )
-    $ do
-      refuelIfNeeded tracer backend Alice 25_000_000
-      refuelIfNeeded tracer backend Bob 25_000_000
-      refuelIfNeeded tracer backend Carol 25_000_000
-
+singlePartyCommitsFromExternal tracer backend hydraScriptsTxId = do
       let contestationPeriod :: CP.ContestationPeriod = 100
-
-      aliceChainConfig <- chainConfigFor Alice workDir backend hydraScriptsTxId [Carol] contestationPeriod
-
-      carolChainConfig <- chainConfigFor Carol workDir backend hydraScriptsTxId [Alice] contestationPeriod
-
-      bobChainConfig <-
-        chainConfigFor Bob workDir2 backend hydraScriptsTxId [Carol] contestationPeriod
-
-      carolChainConfig2 <- chainConfigFor Carol workDir2 backend hydraScriptsTxId [Bob] contestationPeriod
 
       let hydraTracer = contramap FromHydraNode tracer
 
       blockTime <- Backend.getBlockTime backend
       networkId <- Backend.queryNetworkId backend
 
-      (aliceWalletVk, aliceWalletSk) <- keysFor AliceFunds
-      (bobWalletVk, bobWalletSk) <- keysFor BobFunds
-      (carolWalletVk, carolWalletSk) <- keysFor CarolFunds
+      let alice = Party { vkey = "b37aabd81024c043f53a069c91e51a5b52e4ea399ae17ee1fe3cb9c44db707eb" }
+      let bob = Party { vkey = "f68e5624f885d521d2f43c3959a0de70496d5464bd3171aba8248f50d5d72b41" }
+      let carol = Party { vkey = "7abcda7de6d883e7570118c1ccc8ee2e911f2e628a41ab0685ffee15f39bba96" }
 
+      aliceWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/alice.sk"
+      bobWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/bob.sk"
+      carolWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/carol.sk"
+
+      aliceWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/alice.vk"
+      bobWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/bob.vk"
+      carolWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/carol.vk"
+      
       -- Used to signal when the claiming process has finished in the opposite Head
       head1Var <- newTVarIO Nothing
       head2Var <- newTVarIO Nothing
@@ -186,7 +164,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
               let updatedInvoice = 
                     invoice {I.recipient = vkAddress networkId carolWalletVk }
 
-              (lockTx, _) <- buildLockTx pparams networkId updatedInvoice utxoToCommit sender changeAddress lockedVal
+              lockTx <- buildLockTx pparams networkId updatedInvoice utxoToCommit sender changeAddress lockedVal
 
               let signedL2tx = signTx aliceWalletSk lockTx
 
@@ -281,7 +259,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
               pparams <- getProtocolParameters n4
               let sender = vkAddress networkId carolWalletVk
               let changeAddress = mkVkAddress networkId carolWalletVk
-              (lockTx, _) <- buildLockTx pparams networkId invoice carolUTxO sender changeAddress lockedVal
+              lockTx <- buildLockTx pparams networkId invoice carolUTxO sender changeAddress lockedVal
               let signedL2tx = signTx carolWalletSk lockTx
 
               send n4 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
@@ -366,7 +344,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
           stakePools <- Backend.queryStakePools backend QueryTip
           case Backend.buildTransactionWithPParams' pparams systemStart eraHistory stakePools changeAddress utxo [] [scriptOutput] Nothing of
             Left e -> error $ show e
-            Right tx -> pure (tx, invoice)
+            Right tx -> pure tx
 
     buildClaimTX pparams preImage recipient expectedKeyHashes val claimUTxO collateralUTxO collateral changeAddress = do
       let maxTxExecutionUnits =
@@ -395,7 +373,6 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
               & C.addTxIns [(txIn, scriptWitness), (collateral, C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending)]
               & C.addTxInsCollateral [collateral]
               & C.addTxOuts [TxOut recipient val C.TxOutDatumNone C.ReferenceScriptNone]
-              & C.setTxProtocolParams (C.BuildTxWith $ Just $ C.LedgerProtocolParameters pparams)
               & C.setTxExtraKeyWits (C.TxExtraKeyWitnesses C.AlonzoEraOnwardsConway expectedKeyHashes)
               & C.setTxValidityLowerBound (C.TxValidityLowerBound C.AllegraEraOnwardsConway tip)
               & C.setTxValidityUpperBound (C.TxValidityUpperBound C.ShelleyBasedEraConway $ Just $ tip + 5000)
@@ -426,9 +403,7 @@ singlePartyCommitsFromExternal tracer workDir workDir2 backend hydraScriptsTxId 
 main :: IO ()
 main = hspec $ around (showLogsOnFailure "spec") $ do
   describe "HTLC" $ do
-    it "hydra lightning router" $ \tracer ->
-      withTempDir "hydra-head-1" $ \tmpDir ->
-        withTempDir "hydra-head-2" $ \tmpDir2 -> do
-          withCardanoNodeDevnet (contramap FromCardanoNode tracer) tmpDir $ \_ backend -> do
-            x <- Faucet.publishHydraScriptsAs backend Faucet
-            singlePartyCommitsFromExternal tracer tmpDir tmpDir2 backend x
+    it "hydra lightning router" $ \tracer -> do
+      let backend = DirectBackend $ DirectOptions { networkId = C.Testnet $ C.NetworkMagic 42, nodeSocket = "devnet/node.socket" }
+      x <- Faucet.publishHydraScriptsAs backend Faucet
+      singlePartyCommitsFromExternal tracer backend x
