@@ -1,4 +1,4 @@
-name: "Devour Flake"
+name: "CI"
 
 on:
   merge_group:
@@ -13,8 +13,8 @@ permissions:
   pull-requests: write
 
 jobs:
-  devour-flake:
-    name: "Devour Flake"
+  test:
+    name: "Cabal tests"
     runs-on: ubuntu-latest
     steps:
     - name: 📥 Checkout repository
@@ -25,8 +25,6 @@ jobs:
       with:
         authToken: '${{ secrets.CACHIX_CARDANO_SCALING_AUTH_TOKEN }}'
 
-    - name: ❄ Devour Flake
+    - name: Test
       run: |
-        nix build github:srid/devour-flake \
-          -L --no-link --print-out-paths \
-          --override-input flake .
+        nix develop -c cabal test all
