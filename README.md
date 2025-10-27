@@ -6,13 +6,16 @@ Demonstration of routing a payment between two hydra heads using the
 
 ![](image.png)
 
+> [!Note]
+> In our implementation, "Ida" in the picture is called "Carol".
+
 This is an implementation of [HTLC across two Hydra
 Heads](https://github.com/cardano-scaling/hydra/issues/2080) and, for a setup
 with:
 
 - Alice in Head 1
 - Bob in Head 2
-- Ida in Head 1 _and_ Head 2
+- Carol in Head 1 _and_ Head 2
 
 demonstrates:
 
