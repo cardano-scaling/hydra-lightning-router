@@ -1,5 +1,5 @@
 { inputs, ... }: {
-  perSystem = { lib, system, ... }:
+  perSystem = { pkgs, lib, system, ... }:
     let
       myOverlay = final: _prev: {
         hydra-lightning-router = final.callCabal2nix "hydra-lightning-router" (lib.cleanSource "${inputs.self}/hydra-lightning-router") { };
@@ -12,6 +12,7 @@
         packages = p: [ p.hydra-lightning-router ];
         buildInputs = [
           legacyPackages.cabal-install
+          pkgs.process-compose
           inputs.cardano-node.packages.${system}.cardano-node
           inputs.cardano-node.packages.${system}.cardano-cli
           inputs.hydra.packages.${system}.hydra-node

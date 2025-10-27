@@ -11,10 +11,12 @@ import Cardano.Ledger.BaseTypes qualified as Ledger
 import Cardano.Ledger.Credential qualified as Ledger
 import Cardano.Ledger.Plutus.Language (Language (PlutusV3))
 import CardanoClient (QueryPoint (QueryTip))
+import Hydra.Options (DirectOptions (..))
 import CardanoNode (withCardanoNodeDevnet)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently)
 import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO, writeTVar)
+import Hydra.Tx (Party(..))
 import Control.Exception (finally)
 import Control.Lens (contramap, (&), (^..), (^?))
 import Control.Monad (guard)
@@ -62,23 +64,11 @@ import Hydra.Chain.Backend qualified as Backend
 import Hydra.Cluster.Faucet (seedFromFaucet, seedFromFaucetWithMinting)
 import Hydra.Cluster.Faucet qualified as Faucet
 import Hydra.Cluster.Fixture
-  ( Actor (Alice, AliceFunds, Bob, BobFunds, Carol, CarolFunds, Faucet),
-    alice,
-    aliceSk,
-    aliceVk,
-    bob,
-    bobSk,
-    bobVk,
-    carol,
-    carolSk,
-    carolVk,
-  )
+  ( Actor (Faucet))
 import Hydra.Cluster.Scenarios
   ( EndToEndLog (FromCardanoNode, FromFaucet, FromHydraNode),
     headIsInitializingWith,
     recomputeIntegrityHash,
-    refuelIfNeeded,
-    returnFundsToFaucet,
   )
 import Hydra.Cluster.Util (chainConfigFor, keysFor)
 import Hydra.Contract.Dummy (dummyMintingScript)
@@ -98,12 +88,15 @@ import HydraNode
     waitFor,
     waitMatch,
     withHydraNode,
+    withConnectionToNode,
   )
 import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
 import Network.HTTP.Req qualified as Req
 import PlutusTx.Builtins (toBuiltin)
 import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe, withTempDir)
 import Test.QuickCheck (Gen, arbitrary, generate, suchThat)
+import Hydra.Node.Util (readFileTextEnvelopeThrow)
+import Hydra.Chain.Direct (DirectBackend(..))
 
 instance C.HasTypeProxy BS.ByteString where
   data AsType BS.ByteString = AsByteString
@@ -113,49 +106,35 @@ instance C.SerialiseAsRawBytes BS.ByteString where
   serialiseToRawBytes = id
   deserialiseFromRawBytes AsByteString = pure
 
--- | Single hydra-node where the commit is done using some wallet UTxO.
 aliceBobIdaTransferAcrossHeads ::
-  (ChainBackend backend) =>
   Tracer IO EndToEndLog ->
-  FilePath ->
-  FilePath ->
-  backend ->
+  DirectBackend ->
   [C.TxId] ->
   IO ()
-aliceBobIdaTransferAcrossHeads tracer workDir workDir2 backend hydraScriptsTxId =
-  ( `finally`
-      do
-        returnFundsToFaucet tracer backend Alice
-        returnFundsToFaucet tracer backend AliceFunds
-  )
-    $ do
-      refuelIfNeeded tracer backend Alice 25_000_000
-      refuelIfNeeded tracer backend Bob 25_000_000
-      refuelIfNeeded tracer backend Carol 25_000_000
-
+aliceBobIdaTransferAcrossHeads tracer backend hydraScriptsTxId = do
       let contestationPeriod :: CP.ContestationPeriod = 100
-
-      aliceChainConfig <- chainConfigFor Alice workDir backend hydraScriptsTxId [Carol] contestationPeriod
-
-      carolChainConfig <- chainConfigFor Carol workDir backend hydraScriptsTxId [Alice] contestationPeriod
-
-      bobChainConfig <-
-        chainConfigFor Bob workDir2 backend hydraScriptsTxId [Carol] contestationPeriod
-
-      carolChainConfig2 <- chainConfigFor Carol workDir2 backend hydraScriptsTxId [Bob] contestationPeriod
 
       let hydraTracer = contramap FromHydraNode tracer
 
       blockTime <- Backend.getBlockTime backend
       networkId <- Backend.queryNetworkId backend
 
-      (aliceWalletVk, aliceWalletSk) <- keysFor AliceFunds
-      (bobWalletVk, bobWalletSk) <- keysFor BobFunds
-      (carolWalletVk, carolWalletSk) <- keysFor CarolFunds
+      let alice = Party { vkey = "b37aabd81024c043f53a069c91e51a5b52e4ea399ae17ee1fe3cb9c44db707eb" }
+      let bob = Party { vkey = "f68e5624f885d521d2f43c3959a0de70496d5464bd3171aba8248f50d5d72b41" }
+      let carol = Party { vkey = "7abcda7de6d883e7570118c1ccc8ee2e911f2e628a41ab0685ffee15f39bba96" }
 
+      aliceWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/alice.sk"
+      bobWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/bob.sk"
+      carolWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/carol.sk"
+
+      aliceWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/alice.vk"
+      bobWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/bob.vk"
+      carolWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/carol.vk"
+      
       -- Used to signal when the claiming process has finished in the opposite Head
       head1Var <- newTVarIO Nothing
       head2Var <- newTVarIO Nothing
+
       tokensUTxO <- generate (genFungibleAsset (C.Quantity 5) (Just $ C.PolicyId $ C.hashScript $ PlutusScript dummyMintingScript))
       let totalTokenValue = UTxO.totalValue tokensUTxO
       let tokenAssets = C.valueToPolicyAssets totalTokenValue
@@ -170,8 +149,9 @@ aliceBobIdaTransferAcrossHeads tracer workDir workDir2 backend hydraScriptsTxId 
           (contramap FromFaucet tracer)
           (Just dummyMintingScript)
       carolUTxO <- seedFromFaucetWithMinting backend carolWalletVk (C.lovelaceToValue 14_000_000 <> tokenAssetValue) (contramap FromFaucet tracer) (Just dummyMintingScript)
-      let head1 = withHydraNode hydraTracer aliceChainConfig workDir 1 aliceSk [carolVk] [1, 2] $ \n1 ->
-            withHydraNode hydraTracer carolChainConfig workDir 2 carolSk [aliceVk] [1, 2] $ \n2 -> do
+
+      let head1 = withConnectionToNode hydraTracer 1 $ \n1 ->
+            withConnectionToNode hydraTracer 2 $ \n2 -> do
               utxoToCommitCarol <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
               send n1 $ input "Init" []
               headId <- waitMatch (20 * blockTime) n1 $ headIsInitializingWith (Set.fromList [alice, carol])
@@ -210,9 +190,10 @@ aliceBobIdaTransferAcrossHeads tracer workDir workDir2 backend hydraScriptsTxId 
               let recipient = vkAddress networkId bobWalletVk
               let changeAddress = mkVkAddress networkId aliceWalletVk
               (invoice, preImage) <- generateInvoice recipient lockedVal
-              let updatedInvoice =
-                    invoice {I.recipient = vkAddress networkId carolWalletVk}
-              (lockTx, _) <- buildLockTx pparams networkId updatedInvoice utxoToCommitAlice sender changeAddress lockedVal
+              let updatedInvoice = 
+                    invoice {I.recipient = vkAddress networkId carolWalletVk }
+
+              lockTx <- buildLockTx pparams networkId updatedInvoice utxoToCommitAlice sender changeAddress lockedVal
               let signedL2tx = signTx aliceWalletSk lockTx
 
               send n1 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
@@ -265,8 +246,8 @@ aliceBobIdaTransferAcrossHeads tracer workDir workDir2 backend hydraScriptsTxId 
               waitMatch (20 * blockTime) n1 $ \v ->
                 guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
-      let head2 = withHydraNode hydraTracer bobChainConfig workDir2 3 bobSk [carolVk] [3, 4] $ \n3 ->
-            withHydraNode hydraTracer carolChainConfig2 workDir2 4 carolSk [bobVk] [3, 4] $ \n4 -> do
+      let head2 = withConnectionToNode hydraTracer 3 $ \n3 ->
+            withConnectionToNode hydraTracer 4 $ \n4 -> do
               bobUTxO <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
               send n3 $ input "Init" []
               headId <- waitMatch (20 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
@@ -308,8 +289,7 @@ aliceBobIdaTransferAcrossHeads tracer workDir workDir2 backend hydraScriptsTxId 
               pparams <- getProtocolParameters n4
               let sender = vkAddress networkId carolWalletVk
               let changeAddress = mkVkAddress networkId carolWalletVk
-
-              (lockTx, _) <- buildLockTx pparams networkId invoice carolUTxO sender changeAddress lockedVal
+              lockTx <- buildLockTx pparams networkId invoice carolUTxO sender changeAddress lockedVal
               let signedL2tx = signTx carolWalletSk lockTx
 
               send n4 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
@@ -378,23 +358,41 @@ aliceBobIdaTransferAcrossHeads tracer workDir workDir2 backend hydraScriptsTxId 
       pure (invoice, preImage)
 
     buildLockTx pparams networkId invoice utxo sender changeAddress val = do
-      let scriptAddress = mkScriptAddress networkId htlcValidatorScript
-      case standardInvoiceToHTLCDatum invoice sender of
-        Nothing -> error "Failed to generate Datum for Invoice"
-        Just dat -> do
-          let scriptOutput =
-                TxOut
-                  scriptAddress
-                  val
-                  (mkTxOutDatumInline dat)
-                  C.ReferenceScriptNone
+        let scriptAddress = mkScriptAddress networkId htlcValidatorScript
+        case standardInvoiceToHTLCDatum invoice sender of
+          Nothing -> error "Failed to generate Datum for Invoice"
+          Just dat -> do
+            let scriptOutput =
+                  TxOut
+                    scriptAddress
+                    val
+                    (mkTxOutDatumInline dat)
+                    C.ReferenceScriptNone
 
-          systemStart <- Backend.querySystemStart backend QueryTip
-          eraHistory <- Backend.queryEraHistory backend QueryTip
-          stakePools <- Backend.queryStakePools backend QueryTip
-          case Backend.buildTransactionWithPParams' pparams systemStart eraHistory stakePools changeAddress utxo [] [scriptOutput] Nothing of
-            Left e -> error $ show e
-            Right tx -> pure (tx, invoice)
+            systemStart <- Backend.querySystemStart backend QueryTip
+            eraHistory <- Backend.queryEraHistory backend QueryTip
+            stakePools <- Backend.queryStakePools backend QueryTip
+
+            let bodyContent =
+                  defaultTxBodyContent
+                    & C.addTxIns (map (\i -> (i, C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending)) (Set.toList $ C.inputSet utxo))
+                    & C.addTxOuts [scriptOutput]
+
+            case C.makeTransactionBodyAutoBalance
+                   C.shelleyBasedEra
+                   systemStart
+                   (C.toLedgerEpochInfo eraHistory)
+                   (C.LedgerProtocolParameters pparams)
+                   stakePools
+                   mempty
+                   mempty
+                   utxo
+                   bodyContent
+                   changeAddress
+                   Nothing of
+              Left e -> error $ show e
+              Right tx -> pure $ flip Tx [] $ balancedTxBody tx
+
 
     buildClaimTX pparams preImage recipient expectedKeyHashes val claimUTxO collateralUTxO collateral changeAddress = do
       let maxTxExecutionUnits =
@@ -423,7 +421,6 @@ aliceBobIdaTransferAcrossHeads tracer workDir workDir2 backend hydraScriptsTxId 
               & C.addTxIns [(txIn, scriptWitness), (collateral, C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending)]
               & C.addTxInsCollateral [collateral]
               & C.addTxOuts [TxOut recipient val C.TxOutDatumNone C.ReferenceScriptNone]
-              & C.setTxProtocolParams (C.BuildTxWith $ Just $ C.LedgerProtocolParameters pparams)
               & C.setTxExtraKeyWits (C.TxExtraKeyWitnesses C.AlonzoEraOnwardsConway expectedKeyHashes)
               & C.setTxValidityLowerBound (C.TxValidityLowerBound C.AllegraEraOnwardsConway tip)
               & C.setTxValidityUpperBound (C.TxValidityUpperBound C.ShelleyBasedEraConway $ Just $ tip + 5000)
@@ -510,9 +507,7 @@ noNegativeAssetsWithPotentialPolicy mpid out =
 main :: IO ()
 main = hspec $ around (showLogsOnFailure "spec") $ do
   describe "HTLC" $ do
-    it "hydra lightning router" $ \tracer ->
-      withTempDir "hydra-head-1" $ \tmpDir ->
-        withTempDir "hydra-head-2" $ \tmpDir2 -> do
-          withCardanoNodeDevnet (contramap FromCardanoNode tracer) tmpDir $ \_ backend -> do
-            x <- Faucet.publishHydraScriptsAs backend Faucet
-            aliceBobIdaTransferAcrossHeads tracer tmpDir tmpDir2 backend x
+    it "hydra lightning router" $ \tracer -> do
+      let backend = DirectBackend $ DirectOptions { networkId = C.Testnet $ C.NetworkMagic 42, nodeSocket = "devnet/node.socket" }
+      x <- Faucet.publishHydraScriptsAs backend Faucet
+      aliceBobIdaTransferAcrossHeads tracer backend x
