@@ -4,7 +4,7 @@ Demonstration of routing a payment between two hydra heads using the
 [htlc](https://github.com/cardano-scaling/htlc) validator and the
 [invoice](https://github.com/cardano-scaling/hydra-invoices) representation.
 
-![](image.png)
+![](images/image.png)
 
 > [!Note]
 > In our implementation, "Ida" in the picture is called "Carol" in the code
@@ -25,7 +25,9 @@ demonstrates:
 
 ## Demo
 
-- [Video](TBA)
+![](images/demo.png)
+
+- [Video](images/out.mp4)
 
 ## Running
 
