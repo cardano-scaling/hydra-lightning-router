@@ -7,8 +7,8 @@ Demonstration of routing a payment between two hydra heads using the
 ![](images/image.png)
 
 > [!Note]
-> In our implementation, "Ida" in the picture is called "Carol" in the code
-> and TUI.
+> In our implementation, "Ida" in the picture above is called "Carol" in the
+> code and TUI, and our demo videos.
 
 This is an implementation of [HTLC across two Hydra
 Heads](https://github.com/cardano-scaling/hydra/issues/2080) and, for a setup
@@ -26,6 +26,8 @@ demonstrates:
 ## Demo
 
 ![](images/demo.png)
+
+![](images/out.gif)
 
 - [Video](images/out.mp4)
 
