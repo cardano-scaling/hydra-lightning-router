@@ -213,16 +213,16 @@ aliceBobIdaTransferAcrossHeads tracer backend hydraScriptsTxId = do
               -- CLAIM TX
               headUTxO' <- getSnapshotUTxO n2
               let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
-              let headCollateral = C.filter (\(TxOut a _ _ _) -> a /= mkScriptAddress networkId htlcValidatorScript) headUTxO'
 
               let claimRecipient =
                     C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId carolWalletVk)
+              let headCollateral = C.filter (\(TxOut a _ _ _) -> a == claimRecipient) headUTxO'
               let expectedKeyHashes = [C.verificationKeyHash carolWalletVk]
               let collateral = head $ Set.toList $ C.inputSet headCollateral
 
-              claimTx <- buildClaimTX pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral changeAddress
+              claimTx <- buildClaimTX pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
               -- We only need Alice sig for collateral input
-              let signedClaimTx = signTx aliceWalletSk $ signTx carolWalletSk claimTx
+              let signedClaimTx = signTx carolWalletSk claimTx
 
               send n2 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
 
@@ -300,17 +300,19 @@ aliceBobIdaTransferAcrossHeads tracer backend hydraScriptsTxId = do
                   Aeson.toJSON signedL2tx
                     `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
+              threadDelay 5_000_000
+
               -- CLAIM TX
               headUTxO' <- getSnapshotUTxO n3
               let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
-              let headCollateral = C.filter (\(TxOut a _ _ _) -> a /= mkScriptAddress networkId htlcValidatorScript) headUTxO'
               let claimRecipient =
                     C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId bobWalletVk)
+              let headCollateral = C.filter (\(TxOut a _ _ _) -> a == claimRecipient) headUTxO'
               let expectedKeyHashes = [C.verificationKeyHash bobWalletVk]
               let collateral = head $ Set.toList $ C.inputSet headCollateral
 
-              claimTx <- buildClaimTX pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral changeAddress
-              let signedClaimTx = signTx carolWalletSk $ signTx bobWalletSk claimTx
+              claimTx <- buildClaimTX pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
+              let signedClaimTx = signTx bobWalletSk claimTx
 
               send n3 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
 
