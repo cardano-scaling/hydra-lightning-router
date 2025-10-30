@@ -27,8 +27,6 @@ demonstrates:
 
 ![](images/demo.png)
 
-![](images/out.gif)
-
 - [Video](images/out.mp4)
 
 ## Running
