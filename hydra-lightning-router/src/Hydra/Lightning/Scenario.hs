@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
@@ -11,12 +12,10 @@ import Cardano.Ledger.BaseTypes qualified as Ledger
 import Cardano.Ledger.Credential qualified as Ledger
 import Cardano.Ledger.Plutus.Language (Language (PlutusV3))
 import CardanoClient (QueryPoint (QueryTip))
-import Hydra.Options (DirectOptions (..))
 import CardanoNode (withCardanoNodeDevnet)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently)
 import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO, writeTVar)
-import Hydra.Tx (Party(..))
 import Control.Exception (finally)
 import Control.Lens (contramap, (&), (^..), (^?))
 import Control.Monad (guard)
@@ -61,10 +60,12 @@ import Hydra.Cardano.Api
   )
 import Hydra.Chain.Backend (ChainBackend)
 import Hydra.Chain.Backend qualified as Backend
+import Hydra.Chain.Direct (DirectBackend (..))
 import Hydra.Cluster.Faucet (seedFromFaucet, seedFromFaucetWithMinting)
 import Hydra.Cluster.Faucet qualified as Faucet
 import Hydra.Cluster.Fixture
-  ( Actor (Faucet))
+  ( Actor (Faucet),
+  )
 import Hydra.Cluster.Scenarios
   ( EndToEndLog (FromCardanoNode, FromFaucet, FromHydraNode),
     headIsInitializingWith,
@@ -77,7 +78,9 @@ import Hydra.HTLC.Data (Redeemer (Claim))
 import Hydra.HTLC.Embed (htlcValidatorScript)
 import Hydra.Invoice qualified as I
 import Hydra.Logging (Tracer, showLogsOnFailure)
-import Hydra.Tx ()
+import Hydra.Node.Util (readFileTextEnvelopeThrow)
+import Hydra.Options (DirectOptions (..))
+import Hydra.Tx (Party (..))
 import Hydra.Tx.ContestationPeriod qualified as CP
 import HydraNode
   ( getProtocolParameters,
@@ -87,16 +90,14 @@ import HydraNode
     send,
     waitFor,
     waitMatch,
-    withHydraNode,
     withConnectionToNode,
+    withHydraNode,
   )
 import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
 import Network.HTTP.Req qualified as Req
 import PlutusTx.Builtins (toBuiltin)
 import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe, withTempDir)
 import Test.QuickCheck (Gen, arbitrary, generate, suchThat)
-import Hydra.Node.Util (readFileTextEnvelopeThrow)
-import Hydra.Chain.Direct (DirectBackend(..))
 
 instance C.HasTypeProxy BS.ByteString where
   data AsType BS.ByteString = AsByteString
@@ -112,236 +113,236 @@ aliceBobIdaTransferAcrossHeads ::
   [C.TxId] ->
   IO ()
 aliceBobIdaTransferAcrossHeads tracer backend hydraScriptsTxId = do
-      let contestationPeriod :: CP.ContestationPeriod = 100
+  let contestationPeriod :: CP.ContestationPeriod = 100
 
-      let hydraTracer = contramap FromHydraNode tracer
+  let hydraTracer = contramap FromHydraNode tracer
 
-      blockTime <- Backend.getBlockTime backend
-      networkId <- Backend.queryNetworkId backend
+  blockTime <- Backend.getBlockTime backend
+  networkId <- Backend.queryNetworkId backend
 
-      let alice = Party { vkey = "b37aabd81024c043f53a069c91e51a5b52e4ea399ae17ee1fe3cb9c44db707eb" }
-      let bob = Party { vkey = "f68e5624f885d521d2f43c3959a0de70496d5464bd3171aba8248f50d5d72b41" }
-      let carol = Party { vkey = "7abcda7de6d883e7570118c1ccc8ee2e911f2e628a41ab0685ffee15f39bba96" }
+  let alice = Party {vkey = "b37aabd81024c043f53a069c91e51a5b52e4ea399ae17ee1fe3cb9c44db707eb"}
+  let bob = Party {vkey = "f68e5624f885d521d2f43c3959a0de70496d5464bd3171aba8248f50d5d72b41"}
+  let carol = Party {vkey = "7abcda7de6d883e7570118c1ccc8ee2e911f2e628a41ab0685ffee15f39bba96"}
 
-      aliceWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/alice.sk"
-      bobWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/bob.sk"
-      carolWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/carol.sk"
+  aliceWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/alice.sk"
+  bobWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/bob.sk"
+  carolWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/carol.sk"
 
-      aliceWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/alice.vk"
-      bobWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/bob.vk"
-      carolWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/carol.vk"
-      
-      -- Used to signal when the claiming process has finished in the opposite Head
-      head1Var <- newTVarIO Nothing
-      head2Var <- newTVarIO Nothing
+  aliceWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/alice.vk"
+  bobWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/bob.vk"
+  carolWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/carol.vk"
 
-      tokensUTxO <- generate (genFungibleAsset (C.Quantity 5) (Just $ C.PolicyId $ C.hashScript $ PlutusScript dummyMintingScript))
-      let totalTokenValue = UTxO.totalValue tokensUTxO
-      let tokenAssets = C.valueToPolicyAssets totalTokenValue
-      let assetsToValue = foldMap ((mempty <>) . uncurry C.policyAssetsToValue) . Map.toList
-      let tokenAssetValue = assetsToValue tokenAssets
-      let lockedVal = C.lovelaceToValue 5_000_000 <> tokenAssetValue
-      utxoToCommitAlice <-
-        seedFromFaucetWithMinting
-          backend
-          aliceWalletVk
-          (C.lovelaceToValue 12_000_000 <> tokenAssetValue)
-          (contramap FromFaucet tracer)
-          (Just dummyMintingScript)
-      carolUTxO <- seedFromFaucetWithMinting backend carolWalletVk (C.lovelaceToValue 14_000_000 <> tokenAssetValue) (contramap FromFaucet tracer) (Just dummyMintingScript)
+  -- Used to signal when the claiming process has finished in the opposite Head
+  head1Var <- newTVarIO Nothing
+  head2Var <- newTVarIO Nothing
 
-      let head1 = withConnectionToNode hydraTracer 1 $ \n1 ->
-            withConnectionToNode hydraTracer 2 $ \n2 -> do
-              utxoToCommitCarol <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
-              send n1 $ input "Init" []
-              headId <- waitMatch (20 * blockTime) n1 $ headIsInitializingWith (Set.fromList [alice, carol])
+  tokensUTxO <- generate (genFungibleAsset (C.Quantity 5) (Just $ C.PolicyId $ C.hashScript $ PlutusScript dummyMintingScript))
+  let totalTokenValue = UTxO.totalValue tokensUTxO
+  let tokenAssets = C.valueToPolicyAssets totalTokenValue
+  let assetsToValue = foldMap ((mempty <>) . uncurry C.policyAssetsToValue) . Map.toList
+  let tokenAssetValue = assetsToValue tokenAssets
+  let lockedVal = C.lovelaceToValue 5_000_000 <> tokenAssetValue
+  utxoToCommitAlice <-
+    seedFromFaucetWithMinting
+      backend
+      aliceWalletVk
+      (C.lovelaceToValue 12_000_000 <> tokenAssetValue)
+      (contramap FromFaucet tracer)
+      (Just dummyMintingScript)
+  carolUTxO <- seedFromFaucetWithMinting backend carolWalletVk (C.lovelaceToValue 14_000_000 <> tokenAssetValue) (contramap FromFaucet tracer) (Just dummyMintingScript)
 
-              res <-
-                runReq defaultHttpConfig $
-                  req
-                    POST
-                    (http "127.0.0.1" /: "commit")
-                    (Req.ReqBodyJson utxoToCommitAlice)
-                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
-                    (port $ 4000 + 1)
+  let head1 = withConnectionToNode hydraTracer 1 $ \n1 ->
+        withConnectionToNode hydraTracer 2 $ \n2 -> do
+          utxoToCommitCarol <- seedFromFaucet backend carolWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
+          send n1 $ input "Init" []
+          headId <- waitMatch (20 * blockTime) n1 $ headIsInitializingWith (Set.fromList [alice, carol])
 
-              let DraftCommitTxResponse {commitTx} = responseBody res
-              Backend.submitTransaction backend $ signTx aliceWalletSk commitTx
-              res2 <-
-                runReq defaultHttpConfig $
-                  req
-                    POST
-                    (http "127.0.0.1" /: "commit")
-                    (Req.ReqBodyJson utxoToCommitCarol)
-                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
-                    (port $ 4000 + 2)
+          res <-
+            runReq defaultHttpConfig $
+              req
+                POST
+                (http "127.0.0.1" /: "commit")
+                (Req.ReqBodyJson utxoToCommitAlice)
+                (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
+                (port $ 4000 + 1)
 
-              let DraftCommitTxResponse {commitTx = commitTxCarol} = responseBody res2
-              Backend.submitTransaction backend $ signTx carolWalletSk commitTxCarol
+          let DraftCommitTxResponse {commitTx} = responseBody res
+          Backend.submitTransaction backend $ signTx aliceWalletSk commitTx
+          res2 <-
+            runReq defaultHttpConfig $
+              req
+                POST
+                (http "127.0.0.1" /: "commit")
+                (Req.ReqBodyJson utxoToCommitCarol)
+                (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
+                (port $ 4000 + 2)
 
-              headUTxO <- waitMatch (20 * blockTime) n1 $ \v -> do
-                guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
-                guard $ v ^? key "tag" == Just "HeadIsOpen"
-                pure $ v ^? key "utxo"
-              headUTxO `shouldBe` Just (Aeson.toJSON $ utxoToCommitAlice <> utxoToCommitCarol)
+          let DraftCommitTxResponse {commitTx = commitTxCarol} = responseBody res2
+          Backend.submitTransaction backend $ signTx carolWalletSk commitTxCarol
 
-              pparams <- getProtocolParameters n1
-              let sender = vkAddress networkId aliceWalletVk
-              let recipient = vkAddress networkId bobWalletVk
-              let changeAddress = mkVkAddress networkId aliceWalletVk
-              (invoice, preImage) <- generateInvoice recipient lockedVal
-              let updatedInvoice = 
-                    invoice {I.recipient = vkAddress networkId carolWalletVk }
+          headUTxO <- waitMatch (20 * blockTime) n1 $ \v -> do
+            guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
+            guard $ v ^? key "tag" == Just "HeadIsOpen"
+            pure $ v ^? key "utxo"
+          headUTxO `shouldBe` Just (Aeson.toJSON $ utxoToCommitAlice <> utxoToCommitCarol)
 
-              lockTx <- buildLockTx pparams networkId updatedInvoice utxoToCommitAlice sender changeAddress lockedVal
-              let signedL2tx = signTx aliceWalletSk lockTx
+          pparams <- getProtocolParameters n1
+          let sender = vkAddress networkId aliceWalletVk
+          let recipient = vkAddress networkId bobWalletVk
+          let changeAddress = mkVkAddress networkId aliceWalletVk
+          (invoice, preImage) <- generateInvoice recipient lockedVal
+          let updatedInvoice =
+                invoice {I.recipient = vkAddress networkId carolWalletVk}
 
-              send n1 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
+          lockTx <- buildLockTx pparams networkId updatedInvoice utxoToCommitAlice sender changeAddress lockedVal
+          let signedL2tx = signTx aliceWalletSk lockTx
 
-              waitMatch 10 n2 $ \v -> do
-                guard $ v ^? key "tag" == Just "SnapshotConfirmed"
-                guard $
-                  Aeson.toJSON signedL2tx
-                    `elem` (v ^.. key "snapshot" . key "confirmed" . values)
+          send n1 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
 
-              -- NOTIFY Head2 to start the claim
-              atomically $ writeTVar head1Var (Just (invoice, preImage))
+          waitMatch 10 n2 $ \v -> do
+            guard $ v ^? key "tag" == Just "SnapshotConfirmed"
+            guard $
+              Aeson.toJSON signedL2tx
+                `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
-              -- WAITING on Claim tx in Head 2
-              (_invoice', preImage') <- waitLockInHead head2Var
+          -- NOTIFY Head2 to start the claim
+          atomically $ writeTVar head1Var (Just (invoice, preImage))
 
-              -- CLAIM TX
-              headUTxO' <- getSnapshotUTxO n2
-              let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
+          -- WAITING on Claim tx in Head 2
+          (_invoice', preImage') <- waitLockInHead head2Var
 
-              let claimRecipient =
-                    C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId carolWalletVk)
-              let headCollateral = C.filter (\(TxOut a _ _ _) -> a == claimRecipient) headUTxO'
-              let expectedKeyHashes = [C.verificationKeyHash carolWalletVk]
-              let collateral = head $ Set.toList $ C.inputSet headCollateral
+          -- CLAIM TX
+          headUTxO' <- getSnapshotUTxO n2
+          let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
 
-              claimTx <- buildClaimTX pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
-              -- We only need Alice sig for collateral input
-              let signedClaimTx = signTx carolWalletSk claimTx
+          let claimRecipient =
+                C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId carolWalletVk)
+          let headCollateral = C.filter (\(TxOut a _ _ _) -> a == claimRecipient) headUTxO'
+          let expectedKeyHashes = [C.verificationKeyHash carolWalletVk]
+          let collateral = head $ Set.toList $ C.inputSet headCollateral
 
-              send n2 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
+          claimTx <- buildClaimTX pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
+          -- We only need Alice sig for collateral input
+          let signedClaimTx = signTx carolWalletSk claimTx
 
-              waitMatch 20 n2 $ \v -> do
-                guard $ v ^? key "tag" == Just "SnapshotConfirmed"
-                guard $
-                  Aeson.toJSON signedClaimTx
-                    `elem` (v ^.. key "snapshot" . key "confirmed" . values)
+          send n2 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
 
-              send n1 $ input "Close" []
-              deadline <- waitMatch (20 * blockTime) n1 $ \v -> do
-                guard $ v ^? key "tag" == Just "HeadIsClosed"
-                v ^? key "contestationDeadline" . _JSON
-              remainingTime <- diffUTCTime deadline <$> getCurrentTime
+          waitMatch 20 n2 $ \v -> do
+            guard $ v ^? key "tag" == Just "SnapshotConfirmed"
+            guard $
+              Aeson.toJSON signedClaimTx
+                `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
-              waitFor hydraTracer (remainingTime + 20 * blockTime) [n1] $
-                output "ReadyToFanout" ["headId" Aeson..= headId]
+          send n1 $ input "Close" []
+          deadline <- waitMatch (20 * blockTime) n1 $ \v -> do
+            guard $ v ^? key "tag" == Just "HeadIsClosed"
+            v ^? key "contestationDeadline" . _JSON
+          remainingTime <- diffUTCTime deadline <$> getCurrentTime
 
-              send n1 $ input "Fanout" []
+          waitFor hydraTracer (remainingTime + 20 * blockTime) [n1] $
+            output "ReadyToFanout" ["headId" Aeson..= headId]
 
-              waitMatch (20 * blockTime) n1 $ \v ->
-                guard $ v ^? key "tag" == Just "HeadIsFinalized"
+          send n1 $ input "Fanout" []
 
-      let head2 = withConnectionToNode hydraTracer 3 $ \n3 ->
-            withConnectionToNode hydraTracer 4 $ \n4 -> do
-              bobUTxO <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
-              send n3 $ input "Init" []
-              headId <- waitMatch (20 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
+          waitMatch (20 * blockTime) n1 $ \v ->
+            guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
-              res <-
-                runReq defaultHttpConfig $
-                  req
-                    POST
-                    (http "127.0.0.1" /: "commit")
-                    (Req.ReqBodyJson bobUTxO)
-                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
-                    (port $ 4000 + 3)
+  let head2 = withConnectionToNode hydraTracer 3 $ \n3 ->
+        withConnectionToNode hydraTracer 4 $ \n4 -> do
+          bobUTxO <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
+          send n3 $ input "Init" []
+          headId <- waitMatch (20 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
 
-              let DraftCommitTxResponse {commitTx = commitTxBob} = responseBody res
-              Backend.submitTransaction backend $ signTx bobWalletSk commitTxBob
+          res <-
+            runReq defaultHttpConfig $
+              req
+                POST
+                (http "127.0.0.1" /: "commit")
+                (Req.ReqBodyJson bobUTxO)
+                (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
+                (port $ 4000 + 3)
 
-              res2 <-
-                runReq defaultHttpConfig $
-                  req
-                    POST
-                    (http "127.0.0.1" /: "commit")
-                    (Req.ReqBodyJson carolUTxO)
-                    (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
-                    (port $ 4000 + 4)
+          let DraftCommitTxResponse {commitTx = commitTxBob} = responseBody res
+          Backend.submitTransaction backend $ signTx bobWalletSk commitTxBob
 
-              let DraftCommitTxResponse {commitTx = commitTxCarol} = responseBody res2
-              Backend.submitTransaction backend $ signTx carolWalletSk commitTxCarol
+          res2 <-
+            runReq defaultHttpConfig $
+              req
+                POST
+                (http "127.0.0.1" /: "commit")
+                (Req.ReqBodyJson carolUTxO)
+                (Proxy :: Proxy (Req.JsonResponse (DraftCommitTxResponse Tx)))
+                (port $ 4000 + 4)
 
-              headUTxO <- waitMatch (20 * blockTime) n3 $ \v -> do
-                guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
-                guard $ v ^? key "tag" == Just "HeadIsOpen"
-                pure $ v ^? key "utxo"
-              headUTxO `shouldBe` Just (Aeson.toJSON $ bobUTxO <> carolUTxO)
+          let DraftCommitTxResponse {commitTx = commitTxCarol} = responseBody res2
+          Backend.submitTransaction backend $ signTx carolWalletSk commitTxCarol
 
-              -- WAITING on Lock tx in Head 1
-              (invoice, preImage) <- waitLockInHead head1Var
+          headUTxO <- waitMatch (20 * blockTime) n3 $ \v -> do
+            guard $ v ^? key "headId" == Just (Aeson.toJSON headId)
+            guard $ v ^? key "tag" == Just "HeadIsOpen"
+            pure $ v ^? key "utxo"
+          headUTxO `shouldBe` Just (Aeson.toJSON $ bobUTxO <> carolUTxO)
 
-              -- LOCK TX
-              pparams <- getProtocolParameters n4
-              let sender = vkAddress networkId carolWalletVk
-              let changeAddress = mkVkAddress networkId carolWalletVk
-              lockTx <- buildLockTx pparams networkId invoice carolUTxO sender changeAddress lockedVal
-              let signedL2tx = signTx carolWalletSk lockTx
+          -- WAITING on Lock tx in Head 1
+          (invoice, preImage) <- waitLockInHead head1Var
 
-              send n4 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
+          -- LOCK TX
+          pparams <- getProtocolParameters n4
+          let sender = vkAddress networkId carolWalletVk
+          let changeAddress = mkVkAddress networkId carolWalletVk
+          lockTx <- buildLockTx pparams networkId invoice carolUTxO sender changeAddress lockedVal
+          let signedL2tx = signTx carolWalletSk lockTx
 
-              waitMatch 10 n4 $ \v -> do
-                guard $ v ^? key "tag" == Just "SnapshotConfirmed"
-                guard $
-                  Aeson.toJSON signedL2tx
-                    `elem` (v ^.. key "snapshot" . key "confirmed" . values)
+          send n4 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
 
-              threadDelay 5_000_000
+          waitMatch 10 n4 $ \v -> do
+            guard $ v ^? key "tag" == Just "SnapshotConfirmed"
+            guard $
+              Aeson.toJSON signedL2tx
+                `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
-              -- CLAIM TX
-              headUTxO' <- getSnapshotUTxO n3
-              let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
-              let claimRecipient =
-                    C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId bobWalletVk)
-              let headCollateral = C.filter (\(TxOut a _ _ _) -> a == claimRecipient) headUTxO'
-              let expectedKeyHashes = [C.verificationKeyHash bobWalletVk]
-              let collateral = head $ Set.toList $ C.inputSet headCollateral
+          threadDelay 5_000_000
 
-              claimTx <- buildClaimTX pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
-              let signedClaimTx = signTx bobWalletSk claimTx
+          -- CLAIM TX
+          headUTxO' <- getSnapshotUTxO n3
+          let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
+          let claimRecipient =
+                C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId bobWalletVk)
+          let headCollateral = C.filter (\(TxOut a _ _ _) -> a == claimRecipient) headUTxO'
+          let expectedKeyHashes = [C.verificationKeyHash bobWalletVk]
+          let collateral = head $ Set.toList $ C.inputSet headCollateral
 
-              send n3 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
+          claimTx <- buildClaimTX pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
+          let signedClaimTx = signTx bobWalletSk claimTx
 
-              waitMatch 20 n3 $ \v -> do
-                guard $ v ^? key "tag" == Just "SnapshotConfirmed"
-                guard $
-                  Aeson.toJSON signedClaimTx
-                    `elem` (v ^.. key "snapshot" . key "confirmed" . values)
+          send n3 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
 
-              -- NOTIFY Head1 to start the claim
-              atomically $ writeTVar head2Var (Just (invoice, preImage))
+          waitMatch 20 n3 $ \v -> do
+            guard $ v ^? key "tag" == Just "SnapshotConfirmed"
+            guard $
+              Aeson.toJSON signedClaimTx
+                `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
-              send n3 $ input "Close" []
+          -- NOTIFY Head1 to start the claim
+          atomically $ writeTVar head2Var (Just (invoice, preImage))
 
-              deadline <- waitMatch (20 * blockTime) n3 $ \v -> do
-                guard $ v ^? key "tag" == Just "HeadIsClosed"
-                v ^? key "contestationDeadline" . _JSON
-              remainingTime <- diffUTCTime deadline <$> getCurrentTime
-              waitFor hydraTracer (remainingTime + 20 * blockTime) [n3] $
-                output "ReadyToFanout" ["headId" Aeson..= headId]
+          send n3 $ input "Close" []
 
-              send n3 $ input "Fanout" []
+          deadline <- waitMatch (20 * blockTime) n3 $ \v -> do
+            guard $ v ^? key "tag" == Just "HeadIsClosed"
+            v ^? key "contestationDeadline" . _JSON
+          remainingTime <- diffUTCTime deadline <$> getCurrentTime
+          waitFor hydraTracer (remainingTime + 20 * blockTime) [n3] $
+            output "ReadyToFanout" ["headId" Aeson..= headId]
 
-              waitMatch (20 * blockTime) n3 $ \v ->
-                guard $ v ^? key "tag" == Just "HeadIsFinalized"
+          send n3 $ input "Fanout" []
 
-      -- Run two heads in parallel
-      _ <- concurrently head1 head2
-      pure ()
+          waitMatch (20 * blockTime) n3 $ \v ->
+            guard $ v ^? key "tag" == Just "HeadIsFinalized"
+
+  -- Run two heads in parallel
+  _ <- concurrently head1 head2
+  pure ()
   where
     waitLockInHead :: TVar (Maybe b) -> IO b
     waitLockInHead var = do
@@ -360,41 +361,40 @@ aliceBobIdaTransferAcrossHeads tracer backend hydraScriptsTxId = do
       pure (invoice, preImage)
 
     buildLockTx pparams networkId invoice utxo sender changeAddress val = do
-        let scriptAddress = mkScriptAddress networkId htlcValidatorScript
-        case standardInvoiceToHTLCDatum invoice sender of
-          Nothing -> error "Failed to generate Datum for Invoice"
-          Just dat -> do
-            let scriptOutput =
-                  TxOut
-                    scriptAddress
-                    val
-                    (mkTxOutDatumInline dat)
-                    C.ReferenceScriptNone
+      let scriptAddress = mkScriptAddress networkId htlcValidatorScript
+      case standardInvoiceToHTLCDatum invoice sender of
+        Nothing -> error "Failed to generate Datum for Invoice"
+        Just dat -> do
+          let scriptOutput =
+                TxOut
+                  scriptAddress
+                  val
+                  (mkTxOutDatumInline dat)
+                  C.ReferenceScriptNone
 
-            systemStart <- Backend.querySystemStart backend QueryTip
-            eraHistory <- Backend.queryEraHistory backend QueryTip
-            stakePools <- Backend.queryStakePools backend QueryTip
+          systemStart <- Backend.querySystemStart backend QueryTip
+          eraHistory <- Backend.queryEraHistory backend QueryTip
+          stakePools <- Backend.queryStakePools backend QueryTip
 
-            let bodyContent =
-                  defaultTxBodyContent
-                    & C.addTxIns (map (\i -> (i, C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending)) (Set.toList $ C.inputSet utxo))
-                    & C.addTxOuts [scriptOutput]
+          let bodyContent =
+                defaultTxBodyContent
+                  & C.addTxIns (map (,C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending) (Set.toList $ C.inputSet utxo))
+                  & C.addTxOuts [scriptOutput]
 
-            case C.makeTransactionBodyAutoBalance
-                   C.shelleyBasedEra
-                   systemStart
-                   (C.toLedgerEpochInfo eraHistory)
-                   (C.LedgerProtocolParameters pparams)
-                   stakePools
-                   mempty
-                   mempty
-                   utxo
-                   bodyContent
-                   changeAddress
-                   Nothing of
-              Left e -> error $ show e
-              Right tx -> pure $ flip Tx [] $ balancedTxBody tx
-
+          case C.makeTransactionBodyAutoBalance
+            C.shelleyBasedEra
+            systemStart
+            (C.toLedgerEpochInfo eraHistory)
+            (C.LedgerProtocolParameters pparams)
+            stakePools
+            mempty
+            mempty
+            utxo
+            bodyContent
+            changeAddress
+            Nothing of
+            Left e -> error $ show e
+            Right tx -> pure $ flip Tx [] $ balancedTxBody tx
 
     buildClaimTX pparams preImage recipient expectedKeyHashes val claimUTxO collateralUTxO collateral changeAddress = do
       let maxTxExecutionUnits =
@@ -510,6 +510,6 @@ main :: IO ()
 main = hspec $ around (showLogsOnFailure "spec") $ do
   describe "HTLC" $ do
     it "hydra lightning router" $ \tracer -> do
-      let backend = DirectBackend $ DirectOptions { networkId = C.Testnet $ C.NetworkMagic 42, nodeSocket = "devnet/node.socket" }
+      let backend = DirectBackend $ DirectOptions {networkId = C.Testnet $ C.NetworkMagic 42, nodeSocket = "devnet/node.socket"}
       x <- Faucet.publishHydraScriptsAs backend Faucet
       aliceBobIdaTransferAcrossHeads tracer backend x
