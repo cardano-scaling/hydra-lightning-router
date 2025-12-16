@@ -8,10 +8,10 @@ where
 
 import Cardano.Api qualified as C
 import Cardano.Api.HasTypeProxy
-import Control.Exception (SomeException (..))
+import Control.Exception (SomeException (SomeException))
 import Convex.BuildTx (execBuildTx, mintPlutus)
 import Convex.Class (MonadMockchain, setSlot)
-import Convex.CoinSelection (BalanceTxError (..), ChangeOutputPosition (TrailingChange))
+import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
 import Convex.MockChain.Utils (mockchainFails, mockchainSucceeds)
@@ -20,8 +20,7 @@ import Convex.Wallet qualified as Wallet
 import Convex.Wallet.MockWallet qualified as Wallet
 import Data.ByteString qualified as BS
 import Data.ByteString.Convert ()
-import Data.Proxy (Proxy (..))
-import Data.Text (Text)
+import Data.Proxy (Proxy (Proxy))
 import Data.Time (UTCTime (UTCTime), fromGregorian, secondsToDiffTime)
 import Hydra.HTLC.BuildTx (claimHTLC, payHTLC, refundHTLC)
 import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
@@ -104,7 +103,7 @@ canSpendToHTLCScript = do
   let sender = Wallet.address Defaults.networkId Wallet.w1
   let recipient = Wallet.address Defaults.networkId Wallet.w2
   let date = UTCTime (fromGregorian 2040 01 01) (secondsToDiffTime 0)
-  (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
+  (invoice, _) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
   let Just dat = standardInvoiceToHTLCDatum invoice sender
   mockchainSucceeds $ failOnError $ balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
 
