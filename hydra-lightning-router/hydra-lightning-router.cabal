@@ -42,44 +42,24 @@ library
     Hydra.HTLC.Data
     Hydra.HTLC.Embed
     Hydra.HTLC.Upstream
-    Hydra.Lightning.Scenario
 
   hs-source-dirs:  src
   build-depends:
     , aeson
-    , async
     , base16-bytestring
     , bytestring
     , cardano-api
     , cardano-crypto-class
-    , cardano-ledger-core
-    , containers
     , convex-base
     , file-embed
-    , hydra-cardano-api
-    , hydra-cluster
     , hydra-invoices
-    , hydra-node
-    , hydra-plutus
-    , hydra-test-utils
-    , hydra-tx
     , lens
     , lens-aeson
     , plutus-ledger-api
     , plutus-tx
-    , QuickCheck
-    , req
-    , stm
     , template-haskell
     , text
     , time
-
-executable hydra-lightning-router
-  import:         lang
-  main-is:        Main.hs
-  hs-source-dirs: app
-  build-depends:  hydra-lightning-router
-  ghc-options:    -threaded -rtsopts
 
 test-suite hydra-lightning-router-tests
   import:         lang
@@ -99,6 +79,42 @@ test-suite hydra-lightning-router-tests
     , plutus-tx
     , tasty
     , tasty-hunit
+    , time
+
+  ghc-options:    -threaded -rtsopts
+
+test-suite hydra-lightning-router-e2e
+  import:         lang
+  type:           exitcode-stdio-1.0
+  main-is:        Main.hs
+  hs-source-dirs: test-e2e
+  other-modules:
+    Hydra.Lightning.ScenarioSpec
+    Spec
+
+  build-depends:
+    , aeson
+    , async
+    , base
+    , bytestring
+    , cardano-api
+    , cardano-ledger-core
+    , containers
+    , hspec
+    , hydra-cardano-api
+    , hydra-cluster
+    , hydra-invoices
+    , hydra-lightning-router
+    , hydra-node
+    , hydra-plutus
+    , hydra-test-utils
+    , hydra-tx
+    , lens
+    , lens-aeson
+    , plutus-tx
+    , QuickCheck
+    , req
+    , stm
     , time
 
   ghc-options:    -threaded -rtsopts
