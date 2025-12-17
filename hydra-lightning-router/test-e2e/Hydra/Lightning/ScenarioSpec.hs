@@ -32,7 +32,10 @@ import GHC.Conc (TVar, atomically)
 import GHC.IsList (toList)
 import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx))
 import Hydra.Cardano.Api
-  ( Era,
+  ( AddressInEra,
+    Era,
+    LedgerEra,
+    PParams,
     Tx,
     TxOut,
     UTxO,
@@ -90,8 +93,20 @@ import HydraNode
 import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
 import Network.HTTP.Req qualified as Req
 import PlutusTx.Builtins (toBuiltin)
+import System.IO.Unsafe (unsafePerformIO)
 import Test.Hydra.Prelude (Spec, around, describe, it, shouldBe)
 import Test.QuickCheck (Gen, arbitrary, generate, suchThat)
+
+spec :: Spec
+spec = around (showLogsOnFailure "spec") $ do
+  let backend = DirectBackend $ DirectOptions {networkId = C.Testnet $ C.NetworkMagic 42, nodeSocket = "devnet/node.socket"}
+  describe "HTLC" $ do
+    it "hydra lightning router" $ \tracer -> do
+      _ <- Faucet.publishHydraScriptsAs backend Faucet
+      aliceBobIdaTransferAcrossHeads tracer backend
+    it "can refund after accidental closing" $ \tracer -> do
+      _ <- Faucet.publishHydraScriptsAs backend Faucet
+      aliceBobIdaTransferAcrossHeads tracer backend
 
 instance C.HasTypeProxy BS.ByteString where
   data AsType BS.ByteString = AsByteString
@@ -100,6 +115,39 @@ instance C.HasTypeProxy BS.ByteString where
 instance C.SerialiseAsRawBytes BS.ByteString where
   serialiseToRawBytes = id
   deserialiseFromRawBytes AsByteString = pure
+
+alice :: Party
+alice = Party {vkey = "b37aabd81024c043f53a069c91e51a5b52e4ea399ae17ee1fe3cb9c44db707eb"}
+
+bob :: Party
+bob = Party {vkey = "f68e5624f885d521d2f43c3959a0de70496d5464bd3171aba8248f50d5d72b41"}
+
+carol :: Party
+carol = Party {vkey = "7abcda7de6d883e7570118c1ccc8ee2e911f2e628a41ab0685ffee15f39bba96"}
+
+aliceWalletSk :: C.SigningKey C.PaymentKey
+aliceWalletSk = unsafePerformIO $ readFileTextEnvelopeThrow "devnet/credentials/alice.sk"
+{-# NOINLINE aliceWalletSk #-}
+
+bobWalletSk :: C.SigningKey C.PaymentKey
+bobWalletSk = unsafePerformIO $ readFileTextEnvelopeThrow "devnet/credentials/bob.sk"
+{-# NOINLINE bobWalletSk #-}
+
+carolWalletSk :: C.SigningKey C.PaymentKey
+carolWalletSk = unsafePerformIO $ readFileTextEnvelopeThrow "devnet/credentials/carol.sk"
+{-# NOINLINE carolWalletSk #-}
+
+aliceWalletVk :: C.VerificationKey C.PaymentKey
+aliceWalletVk = unsafePerformIO $ readFileTextEnvelopeThrow "devnet/credentials/alice.vk"
+{-# NOINLINE aliceWalletVk #-}
+
+bobWalletVk :: C.VerificationKey C.PaymentKey
+bobWalletVk = unsafePerformIO $ readFileTextEnvelopeThrow "devnet/credentials/bob.vk"
+{-# NOINLINE bobWalletVk #-}
+
+carolWalletVk :: C.VerificationKey C.PaymentKey
+carolWalletVk = unsafePerformIO $ readFileTextEnvelopeThrow "devnet/credentials/carol.vk"
+{-# NOINLINE carolWalletVk #-}
 
 aliceBobIdaTransferAcrossHeads ::
   Tracer IO EndToEndLog ->
@@ -110,18 +158,6 @@ aliceBobIdaTransferAcrossHeads tracer backend = do
 
   blockTime <- Backend.getBlockTime backend
   networkId <- Backend.queryNetworkId backend
-
-  let alice = Party {vkey = "b37aabd81024c043f53a069c91e51a5b52e4ea399ae17ee1fe3cb9c44db707eb"}
-  let bob = Party {vkey = "f68e5624f885d521d2f43c3959a0de70496d5464bd3171aba8248f50d5d72b41"}
-  let carol = Party {vkey = "7abcda7de6d883e7570118c1ccc8ee2e911f2e628a41ab0685ffee15f39bba96"}
-
-  aliceWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/alice.sk"
-  bobWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/bob.sk"
-  carolWalletSk <- readFileTextEnvelopeThrow "devnet/credentials/carol.sk"
-
-  aliceWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/alice.vk"
-  bobWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/bob.vk"
-  carolWalletVk <- readFileTextEnvelopeThrow "devnet/credentials/carol.vk"
 
   -- Used to signal when the claiming process has finished in the opposite Head
   head1Var <- newTVarIO Nothing
@@ -185,7 +221,7 @@ aliceBobIdaTransferAcrossHeads tracer backend = do
           let updatedInvoice =
                 invoice {I.recipient = vkAddress networkId carolWalletVk}
 
-          lockTx <- buildLockTx pparams networkId updatedInvoice utxoToCommitAlice sender changeAddress lockedVal
+          lockTx <- buildLockTx backend pparams networkId updatedInvoice utxoToCommitAlice sender changeAddress lockedVal
           let signedL2tx = signTx aliceWalletSk lockTx
 
           send n1 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
@@ -212,7 +248,7 @@ aliceBobIdaTransferAcrossHeads tracer backend = do
           let expectedKeyHashes = [C.verificationKeyHash carolWalletVk]
           let collateral = head $ Set.toList $ C.inputSet headCollateral
 
-          claimTx <- buildClaimTX pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
+          claimTx <- buildClaimTX backend pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
           -- We only need Alice sig for collateral input
           let signedClaimTx = signTx carolWalletSk claimTx
 
@@ -281,7 +317,7 @@ aliceBobIdaTransferAcrossHeads tracer backend = do
           pparams <- getProtocolParameters n4
           let sender = vkAddress networkId carolWalletVk
           let changeAddress = mkVkAddress networkId carolWalletVk
-          lockTx <- buildLockTx pparams networkId invoice carolUTxO sender changeAddress lockedVal
+          lockTx <- buildLockTx backend pparams networkId invoice carolUTxO sender changeAddress lockedVal
           let signedL2tx = signTx carolWalletSk lockTx
 
           send n4 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
@@ -303,7 +339,7 @@ aliceBobIdaTransferAcrossHeads tracer backend = do
           let expectedKeyHashes = [C.verificationKeyHash bobWalletVk]
           let collateral = head $ Set.toList $ C.inputSet headCollateral
 
-          claimTx <- buildClaimTX pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
+          claimTx <- buildClaimTX backend pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
           let signedClaimTx = signTx bobWalletSk claimTx
 
           send n3 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
@@ -334,45 +370,120 @@ aliceBobIdaTransferAcrossHeads tracer backend = do
   -- Run two heads in parallel
   _ <- concurrently head1 head2
   pure ()
-  where
-    waitLockInHead :: TVar (Maybe b) -> IO b
-    waitLockInHead var = do
-      lockDatum <- readTVarIO var
-      case lockDatum of
-        Nothing -> threadDelay 1 >> waitLockInHead var
-        Just d -> pure d
 
-    vkAddress :: C.NetworkId -> C.VerificationKey C.PaymentKey -> C.Address C.ShelleyAddr
-    vkAddress networkId vk =
-      C.makeShelleyAddress networkId (C.PaymentCredentialByKey $ C.verificationKeyHash vk) C.NoStakeAddress
+waitLockInHead :: TVar (Maybe b) -> IO b
+waitLockInHead var = do
+  lockDatum <- readTVarIO var
+  case lockDatum of
+    Nothing -> threadDelay 1 >> waitLockInHead var
+    Just d -> pure d
 
-    generateInvoice recipient value = do
-      date <- addUTCTime (60 * 60 * 24 * 30) <$> getCurrentTime
-      (invoice, preImage) <- I.generateStandardInvoice recipient value date
-      pure (invoice, preImage)
+vkAddress :: C.NetworkId -> C.VerificationKey C.PaymentKey -> C.Address C.ShelleyAddr
+vkAddress networkId vk =
+  C.makeShelleyAddress networkId (C.PaymentCredentialByKey $ C.verificationKeyHash vk) C.NoStakeAddress
 
-    buildLockTx pparams networkId invoice utxo sender changeAddress val = do
-      let scriptAddress = mkScriptAddress networkId htlcValidatorScript
-      case standardInvoiceToHTLCDatum invoice sender of
-        Nothing -> error "Failed to generate Datum for Invoice"
-        Just dat -> do
-          let scriptOutput =
-                TxOut
-                  scriptAddress
-                  val
-                  (mkTxOutDatumInline dat)
-                  C.ReferenceScriptNone
+generateInvoice :: C.Address C.ShelleyAddr -> C.Value -> IO (I.StandardInvoice, I.PreImage)
+generateInvoice recipient value = do
+  date <- addUTCTime (60 * 60 * 24 * 30) <$> getCurrentTime
+  (invoice, preImage) <- I.generateStandardInvoice recipient value date
+  pure (invoice, preImage)
 
-          systemStart <- Backend.querySystemStart backend QueryTip
-          eraHistory <- Backend.queryEraHistory backend QueryTip
-          stakePools <- Backend.queryStakePools backend QueryTip
+buildLockTx ::
+  DirectBackend ->
+  PParams LedgerEra ->
+  C.NetworkId ->
+  I.StandardInvoice ->
+  UTxO.UTxO Era ->
+  C.Address C.ShelleyAddr ->
+  AddressInEra ->
+  C.Value ->
+  IO Tx
+buildLockTx backend pparams networkId invoice utxo sender changeAddress val = do
+  let scriptAddress = mkScriptAddress networkId htlcValidatorScript
+  case standardInvoiceToHTLCDatum invoice sender of
+    Nothing -> error "Failed to generate Datum for Invoice"
+    Just dat -> do
+      let scriptOutput =
+            TxOut
+              scriptAddress
+              val
+              (mkTxOutDatumInline dat)
+              C.ReferenceScriptNone
 
-          let bodyContent =
-                defaultTxBodyContent
-                  & C.addTxIns (map (,C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending) (Set.toList $ C.inputSet utxo))
-                  & C.addTxOuts [scriptOutput]
+      systemStart <- Backend.querySystemStart backend QueryTip
+      eraHistory <- Backend.queryEraHistory backend QueryTip
+      stakePools <- Backend.queryStakePools backend QueryTip
 
-          case C.makeTransactionBodyAutoBalance
+      let bodyContent =
+            defaultTxBodyContent
+              & C.addTxIns (map (,C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending) (Set.toList $ C.inputSet utxo))
+              & C.addTxOuts [scriptOutput]
+
+      case C.makeTransactionBodyAutoBalance
+        C.shelleyBasedEra
+        systemStart
+        (C.toLedgerEpochInfo eraHistory)
+        (C.LedgerProtocolParameters pparams)
+        stakePools
+        mempty
+        mempty
+        utxo
+        bodyContent
+        changeAddress
+        Nothing of
+        Left e -> error $ show e
+        Right tx -> pure $ flip Tx [] $ balancedTxBody tx
+
+buildClaimTX ::
+  DirectBackend ->
+  PParams LedgerEra ->
+  I.PreImage ->
+  AddressInEra ->
+  [C.Hash C.PaymentKey] ->
+  C.Value ->
+  UTxO.UTxO Era ->
+  UTxO.UTxO Era ->
+  C.TxIn ->
+  C.AddressInEra Era ->
+  IO (C.Tx Era)
+buildClaimTX backend pparams preImage recipient expectedKeyHashes val claimUTxO collateralUTxO collateral changeAddress = do
+  let maxTxExecutionUnits =
+        C.ExecutionUnits
+          { C.executionMemory = 0,
+            C.executionSteps = 0
+          }
+
+  let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage preImage
+
+  let scriptWitness =
+        C.BuildTxWith $
+          C.ScriptWitness C.scriptWitnessInCtx $
+            PlutusScriptWitness
+              htlcValidatorScript
+              (C.ScriptDatumForTxIn Nothing)
+              (toScriptData (Claim secret))
+              maxTxExecutionUnits
+
+  let txIn = head $ Set.toList $ C.inputSet claimUTxO
+
+  C.ChainPoint tip _ <- Backend.queryTip backend
+
+  let body =
+        defaultTxBodyContent
+          & C.addTxIns [(txIn, scriptWitness), (collateral, C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending)]
+          & C.addTxInsCollateral [collateral]
+          & C.addTxOuts [TxOut recipient val C.TxOutDatumNone C.ReferenceScriptNone]
+          & C.setTxExtraKeyWits (C.TxExtraKeyWitnesses C.AlonzoEraOnwardsConway expectedKeyHashes)
+          & C.setTxValidityLowerBound (C.TxValidityLowerBound C.AllegraEraOnwardsConway tip)
+          & C.setTxValidityUpperBound (C.TxValidityUpperBound C.ShelleyBasedEraConway $ Just $ tip + 5000)
+
+  systemStart <- Backend.querySystemStart backend CardanoClient.QueryTip
+  eraHistory <- Backend.queryEraHistory backend CardanoClient.QueryTip
+  stakePools <- Backend.queryStakePools backend CardanoClient.QueryTip
+
+  let eBody =
+        second (flip Tx [] . balancedTxBody) $
+          C.makeTransactionBodyAutoBalance
             C.shelleyBasedEra
             systemStart
             (C.toLedgerEpochInfo eraHistory)
@@ -380,66 +491,14 @@ aliceBobIdaTransferAcrossHeads tracer backend = do
             stakePools
             mempty
             mempty
-            utxo
-            bodyContent
+            (claimUTxO <> collateralUTxO)
+            body
             changeAddress
-            Nothing of
-            Left e -> error $ show e
-            Right tx -> pure $ flip Tx [] $ balancedTxBody tx
-
-    buildClaimTX pparams preImage recipient expectedKeyHashes val claimUTxO collateralUTxO collateral changeAddress = do
-      let maxTxExecutionUnits =
-            C.ExecutionUnits
-              { C.executionMemory = 0,
-                C.executionSteps = 0
-              }
-
-      let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage preImage
-
-      let scriptWitness =
-            C.BuildTxWith $
-              C.ScriptWitness C.scriptWitnessInCtx $
-                PlutusScriptWitness
-                  htlcValidatorScript
-                  (C.ScriptDatumForTxIn Nothing)
-                  (toScriptData (Claim secret))
-                  maxTxExecutionUnits
-
-      let txIn = head $ Set.toList $ C.inputSet claimUTxO
-
-      C.ChainPoint tip _ <- Backend.queryTip backend
-
-      let body =
-            defaultTxBodyContent
-              & C.addTxIns [(txIn, scriptWitness), (collateral, C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending)]
-              & C.addTxInsCollateral [collateral]
-              & C.addTxOuts [TxOut recipient val C.TxOutDatumNone C.ReferenceScriptNone]
-              & C.setTxExtraKeyWits (C.TxExtraKeyWitnesses C.AlonzoEraOnwardsConway expectedKeyHashes)
-              & C.setTxValidityLowerBound (C.TxValidityLowerBound C.AllegraEraOnwardsConway tip)
-              & C.setTxValidityUpperBound (C.TxValidityUpperBound C.ShelleyBasedEraConway $ Just $ tip + 5000)
-
-      systemStart <- Backend.querySystemStart backend CardanoClient.QueryTip
-      eraHistory <- Backend.queryEraHistory backend CardanoClient.QueryTip
-      stakePools <- Backend.queryStakePools backend CardanoClient.QueryTip
-
-      let eBody =
-            second (flip Tx [] . balancedTxBody) $
-              C.makeTransactionBodyAutoBalance
-                C.shelleyBasedEra
-                systemStart
-                (C.toLedgerEpochInfo eraHistory)
-                (C.LedgerProtocolParameters pparams)
-                stakePools
-                mempty
-                mempty
-                (claimUTxO <> collateralUTxO)
-                body
-                changeAddress
-                Nothing
-      case eBody of
-        Left e -> error $ show e
-        Right tx ->
-          pure $ fromLedgerTx @Era $ recomputeIntegrityHash pparams [PlutusV3] (toLedgerTx tx)
+            Nothing
+  case eBody of
+    Left e -> error $ show e
+    Right tx ->
+      pure $ fromLedgerTx @Era $ recomputeIntegrityHash pparams [PlutusV3] (toLedgerTx tx)
 
 -- ASSET GENERATION
 genFungibleAsset :: C.Quantity -> Maybe C.PolicyId -> Gen UTxO
@@ -496,14 +555,3 @@ noNegativeAssetsWithPotentialPolicy mpid out =
               (\(_, C.Quantity n) -> n > 0)
               (toList $ C.policyAssetsToValue pid passets)
         )
-
-spec :: Spec
-spec = around (showLogsOnFailure "spec") $ do
-  let backend = DirectBackend $ DirectOptions {networkId = C.Testnet $ C.NetworkMagic 42, nodeSocket = "devnet/node.socket"}
-  describe "HTLC" $ do
-    it "hydra lightning router" $ \tracer -> do
-      _ <- Faucet.publishHydraScriptsAs backend Faucet
-      aliceBobIdaTransferAcrossHeads tracer backend
-    it "can refund after accidental closing" $ \tracer -> do
-      _ <- Faucet.publishHydraScriptsAs backend Faucet
-      aliceBobIdaTransferAcrossHeads tracer backend
