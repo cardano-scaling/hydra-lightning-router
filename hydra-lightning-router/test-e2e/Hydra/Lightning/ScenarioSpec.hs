@@ -26,16 +26,17 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 import Data.Set qualified as Set
-import Data.Time (addUTCTime, diffUTCTime)
+import Data.Time (UTCTime, addUTCTime, diffUTCTime)
 import Data.Time.Clock.POSIX (getCurrentTime)
 import GHC.Conc (TVar, atomically)
 import GHC.IsList (toList)
-import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx))
+import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx), TransactionSubmitted)
 import Hydra.Cardano.Api
   ( AddressInEra,
     Era,
     LedgerEra,
     PParams,
+    SlotNo,
     Tx,
     TxOut,
     UTxO,
@@ -43,14 +44,18 @@ import Hydra.Cardano.Api
     defaultTxBodyContent,
     fromLedgerTx,
     fromLedgerTxOut,
+    isScriptTxOut,
     mkScriptAddress,
+    mkScriptDatum,
     mkTxOutDatumInline,
     mkVkAddress,
+    scriptWitnessInCtx,
     signTx,
     toLedgerTx,
     toScriptData,
     txOutReferenceScript,
     txOutValue,
+    utxoFromTx,
     pattern ByronAddressInEra,
     pattern PlutusScript,
     pattern PlutusScriptWitness,
@@ -59,6 +64,7 @@ import Hydra.Cardano.Api
     pattern Tx,
     pattern TxOut,
   )
+import Hydra.Cardano.Api.Pretty (renderTxWithUTxO)
 import Hydra.Chain.Backend qualified as Backend
 import Hydra.Chain.Direct (DirectBackend (DirectBackend))
 import Hydra.Cluster.Faucet (seedFromFaucet, seedFromFaucetWithMinting)
@@ -73,9 +79,10 @@ import Hydra.Cluster.Scenarios
   )
 import Hydra.Contract.Dummy (dummyMintingScript)
 import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
-import Hydra.HTLC.Data (Redeemer (Claim))
+import Hydra.HTLC.Data (Redeemer (Claim, Refund))
 import Hydra.HTLC.Embed (htlcValidatorScript)
 import Hydra.Invoice qualified as I
+import Hydra.Ledger.Cardano.Evaluate (maxTxExecutionUnits)
 import Hydra.Logging (Tracer, showLogsOnFailure)
 import Hydra.Node.Util (readFileTextEnvelopeThrow)
 import Hydra.Options (DirectOptions (DirectOptions, networkId, nodeSocket))
@@ -381,9 +388,7 @@ closeAfterLockAndRefund tracer backend = do
   blockTime <- Backend.getBlockTime backend
   networkId <- Backend.queryNetworkId backend
 
-  -- Used to signal when the claiming process has finished in the opposite Head
   head1Var <- newTVarIO Nothing
-  head2Var <- newTVarIO Nothing
 
   tokensUTxO <- generate (genFungibleAsset (C.Quantity 5) (Just $ C.PolicyId $ C.hashScript $ PlutusScript dummyMintingScript))
   let totalTokenValue = UTxO.totalValue tokensUTxO
@@ -439,7 +444,8 @@ closeAfterLockAndRefund tracer backend = do
           let sender = vkAddress networkId aliceWalletVk
           let recipient = vkAddress networkId bobWalletVk
           let changeAddress = mkVkAddress networkId aliceWalletVk
-          (invoice, preImage) <- generateInvoice recipient lockedVal
+          now <- getCurrentTime
+          (invoice, _) <- generateInvoiceWithTime now recipient lockedVal
           let updatedInvoice =
                 invoice {I.recipient = vkAddress networkId carolWalletVk}
 
@@ -452,34 +458,6 @@ closeAfterLockAndRefund tracer backend = do
             guard $ v ^? key "tag" == Just "SnapshotConfirmed"
             guard $
               Aeson.toJSON signedL2tx
-                `elem` (v ^.. key "snapshot" . key "confirmed" . values)
-
-          -- NOTIFY Head2 to start the claim
-          atomically $ writeTVar head1Var (Just (invoice, preImage))
-
-          -- WAITING on Claim tx in Head 2
-          (_invoice', preImage') <- waitLockInHead head2Var
-
-          -- CLAIM TX
-          headUTxO' <- getSnapshotUTxO n2
-          let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
-
-          let claimRecipient =
-                C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId carolWalletVk)
-          let headCollateral = C.filter (\(TxOut a _ _ _) -> a == claimRecipient) headUTxO'
-          let expectedKeyHashes = [C.verificationKeyHash carolWalletVk]
-          let collateral = head $ Set.toList $ C.inputSet headCollateral
-
-          claimTx <- buildClaimTX backend pparams preImage' claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
-          -- We only need Alice sig for collateral input
-          let signedClaimTx = signTx carolWalletSk claimTx
-
-          send n2 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
-
-          waitMatch 20 n2 $ \v -> do
-            guard $ v ^? key "tag" == Just "SnapshotConfirmed"
-            guard $
-              Aeson.toJSON signedClaimTx
                 `elem` (v ^.. key "snapshot" . key "confirmed" . values)
 
           send n1 $ input "Close" []
@@ -496,8 +474,11 @@ closeAfterLockAndRefund tracer backend = do
           waitMatch (20 * blockTime) n1 $ \v ->
             guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
+          -- NOTIFY Head2 to also close and then try to refund
+          atomically $ writeTVar head1Var (Just (invoice, UTxO.filter (isScriptTxOut htlcValidatorScript) (utxoFromTx lockTx)))
+
   let head2 = withConnectionToNode hydraTracer 3 $ \n3 ->
-        withConnectionToNode hydraTracer 4 $ \n4 -> do
+        withConnectionToNode hydraTracer 4 $ \_ -> do
           bobUTxO <- seedFromFaucet backend bobWalletVk (C.lovelaceToValue 10_000_000) (contramap FromFaucet tracer)
           send n3 $ input "Init" []
           headId <- waitMatch (20 * blockTime) n3 $ headIsInitializingWith (Set.fromList [bob, carol])
@@ -532,55 +513,24 @@ closeAfterLockAndRefund tracer backend = do
             pure $ v ^? key "utxo"
           headUTxO `shouldBe` Just (Aeson.toJSON $ bobUTxO <> carolUTxO)
 
-          -- WAITING on Lock tx in Head 1
-          (invoice, preImage) <- waitLockInHead head1Var
+          -- WAITING for Head 1 to close after locking the funds in HTLC script
+          (invoice, htlcUTxO) <- waitLockInHead head1Var
 
-          -- LOCK TX
-          pparams <- getProtocolParameters n4
-          let sender = vkAddress networkId carolWalletVk
+          pparams <- getProtocolParameters n3
+          let sender = vkAddress networkId aliceWalletVk
+          let recipient = mkVkAddress networkId carolWalletVk
           let changeAddress = mkVkAddress networkId carolWalletVk
-          lockTx <- buildLockTx backend pparams networkId invoice carolUTxO sender changeAddress lockedVal
-          let signedL2tx = signTx carolWalletSk lockTx
 
-          send n4 $ input "NewTx" ["transaction" Aeson..= signedL2tx]
-
-          waitMatch 10 n4 $ \v -> do
-            guard $ v ^? key "tag" == Just "SnapshotConfirmed"
-            guard $
-              Aeson.toJSON signedL2tx
-                `elem` (v ^.. key "snapshot" . key "confirmed" . values)
-
-          threadDelay 5_000_000
-
-          -- CLAIM TX
-          headUTxO' <- getSnapshotUTxO n3
-          let claimUTxO = C.filter (\(TxOut a _ _ _) -> a == mkScriptAddress networkId htlcValidatorScript) headUTxO'
-          let claimRecipient =
-                C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId bobWalletVk)
-          let headCollateral = C.filter (\(TxOut a _ _ _) -> a == claimRecipient) headUTxO'
-          let expectedKeyHashes = [C.verificationKeyHash bobWalletVk]
-          let collateral = head $ Set.toList $ C.inputSet headCollateral
-
-          claimTx <- buildClaimTX backend pparams preImage claimRecipient expectedKeyHashes lockedVal claimUTxO headCollateral collateral claimRecipient
-          let signedClaimTx = signTx bobWalletSk claimTx
-
-          send n3 $ input "NewTx" ["transaction" Aeson..= signedClaimTx]
-
-          waitMatch 20 n3 $ \v -> do
-            guard $ v ^? key "tag" == Just "SnapshotConfirmed"
-            guard $
-              Aeson.toJSON signedClaimTx
-                `elem` (v ^.. key "snapshot" . key "confirmed" . values)
-
-          -- NOTIFY Head1 to start the claim
-          atomically $ writeTVar head2Var (Just (invoice, preImage))
+          refundTx <- buildRefundTx backend pparams invoice htlcUTxO sender recipient changeAddress lockedVal
+          let signedL1tx = signTx carolWalletSk refundTx
+          putStrLn $ renderTxWithUTxO htlcUTxO signedL1tx
 
           send n3 $ input "Close" []
-
           deadline <- waitMatch (20 * blockTime) n3 $ \v -> do
             guard $ v ^? key "tag" == Just "HeadIsClosed"
             v ^? key "contestationDeadline" . _JSON
           remainingTime <- diffUTCTime deadline <$> getCurrentTime
+
           waitFor hydraTracer (remainingTime + 20 * blockTime) [n3] $
             output "ReadyToFanout" ["headId" Aeson..= headId]
 
@@ -589,8 +539,22 @@ closeAfterLockAndRefund tracer backend = do
           waitMatch (20 * blockTime) n3 $ \v ->
             guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
+          response <-
+            runReq defaultHttpConfig $
+              req
+                POST
+                (http "127.0.0.1" /: "cardano-transaction")
+                (Req.ReqBodyJson signedL1tx)
+                (Proxy :: Proxy (Req.JsonResponse TransactionSubmitted))
+                (port $ 4000 + 4)
+
+          let submitted = responseBody response
+          print submitted
+          pure signedL1tx
+
   -- Run two heads in parallel
   _ <- concurrently head1 head2
+
   pure ()
 
 waitLockInHead :: TVar (Maybe b) -> IO b
@@ -609,6 +573,72 @@ generateInvoice recipient value = do
   date <- addUTCTime (60 * 60 * 24 * 30) <$> getCurrentTime
   (invoice, preImage) <- I.generateStandardInvoice recipient value date
   pure (invoice, preImage)
+
+generateInvoiceWithTime :: UTCTime -> C.Address C.ShelleyAddr -> C.Value -> IO (I.StandardInvoice, I.PreImage)
+generateInvoiceWithTime now recipient value = do
+  (invoice, preImage) <- I.generateStandardInvoice recipient value now
+  pure (invoice, preImage)
+
+buildRefundTx ::
+  DirectBackend ->
+  PParams LedgerEra ->
+  I.StandardInvoice ->
+  UTxO.UTxO Era ->
+  C.Address C.ShelleyAddr ->
+  AddressInEra ->
+  AddressInEra ->
+  C.Value ->
+  IO Tx
+buildRefundTx backend pparams invoice utxo sender recipient changeAddress val = do
+  -- let scriptAddress = mkScriptAddress networkId htlcValidatorScript
+  case standardInvoiceToHTLCDatum invoice sender of
+    Nothing -> error "Failed to generate Datum for Invoice"
+    Just dat -> do
+      let carolsOutput =
+            TxOut
+              recipient
+              val
+              (mkTxOutDatumInline dat)
+              C.ReferenceScriptNone
+
+      systemStart <- Backend.querySystemStart backend QueryTip
+      eraHistory <- Backend.queryEraHistory backend QueryTip
+      stakePools <- Backend.queryStakePools backend QueryTip
+      let scriptWitness =
+            C.BuildTxWith $
+              C.ScriptWitness scriptWitnessInCtx $
+                PlutusScriptWitness
+                  htlcValidatorScript
+                  (mkScriptDatum dat)
+                  (toScriptData Refund)
+                  maxTxExecutionUnits
+      tip <- Backend.queryTip backend
+      let currentSlot = case C.chainPointToSlotNo tip of
+            Nothing -> error "Failed to convert ChainPoint to SlotNo"
+            Just s -> s
+      let upperSlot :: SlotNo = currentSlot
+      let bodyContent =
+            defaultTxBodyContent
+              & C.addTxIns (map (,scriptWitness) (Set.toList $ C.inputSet utxo))
+              & C.addTxOuts [carolsOutput]
+              & C.setTxAuxScripts (C.TxAuxScripts C.AllegraEraOnwardsConway [C.ScriptInEra C.PlutusScriptV3InConway (PlutusScript htlcValidatorScript)])
+              & C.setTxValidityLowerBound (C.TxValidityLowerBound C.AllegraEraOnwardsConway upperSlot)
+              & C.setTxExtraKeyWits (C.TxExtraKeyWitnesses C.AlonzoEraOnwardsConway [C.verificationKeyHash aliceWalletVk])
+
+      case C.makeTransactionBodyAutoBalance
+        C.shelleyBasedEra
+        systemStart
+        (C.toLedgerEpochInfo eraHistory)
+        (C.LedgerProtocolParameters pparams)
+        stakePools
+        mempty
+        mempty
+        utxo
+        bodyContent
+        changeAddress
+        Nothing of
+        Left e -> error $ show e
+        Right tx -> pure $ flip Tx [] $ balancedTxBody tx
 
 buildLockTx ::
   DirectBackend ->
@@ -669,7 +699,7 @@ buildClaimTX ::
   C.AddressInEra Era ->
   IO (C.Tx Era)
 buildClaimTX backend pparams preImage recipient expectedKeyHashes val claimUTxO collateralUTxO collateral changeAddress = do
-  let maxTxExecutionUnits =
+  let maxTxExecutionUnits' =
         C.ExecutionUnits
           { C.executionMemory = 0,
             C.executionSteps = 0
@@ -684,7 +714,7 @@ buildClaimTX backend pparams preImage recipient expectedKeyHashes val claimUTxO 
               htlcValidatorScript
               (C.ScriptDatumForTxIn Nothing)
               (toScriptData (Claim secret))
-              maxTxExecutionUnits
+              maxTxExecutionUnits'
 
   let txIn = head $ Set.toList $ C.inputSet claimUTxO
 
