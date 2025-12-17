@@ -11,13 +11,11 @@ import Cardano.Ledger.BaseTypes qualified as Ledger
 import Cardano.Ledger.Credential qualified as Ledger
 import Cardano.Ledger.Plutus.Language (Language (PlutusV3))
 import CardanoClient (QueryPoint (QueryTip))
-import Hydra.Options (DirectOptions (..))
-import CardanoNode (withCardanoNodeDevnet)
+import Hydra.Options (DirectOptions (DirectOptions, networkId, nodeSocket))
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently)
 import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO, writeTVar)
-import Hydra.Tx (Party(..))
-import Control.Exception (finally)
+import Hydra.Tx (Party(Party, vkey))
 import Control.Lens (contramap, (&), (^..), (^?))
 import Control.Monad (guard)
 import Data.Aeson qualified as Aeson
@@ -59,18 +57,16 @@ import Hydra.Cardano.Api
     pattern Tx,
     pattern TxOut,
   )
-import Hydra.Chain.Backend (ChainBackend)
 import Hydra.Chain.Backend qualified as Backend
 import Hydra.Cluster.Faucet (seedFromFaucet, seedFromFaucetWithMinting)
 import Hydra.Cluster.Faucet qualified as Faucet
 import Hydra.Cluster.Fixture
   ( Actor (Faucet))
 import Hydra.Cluster.Scenarios
-  ( EndToEndLog (FromCardanoNode, FromFaucet, FromHydraNode),
+  ( EndToEndLog (FromFaucet, FromHydraNode),
     headIsInitializingWith,
     recomputeIntegrityHash,
   )
-import Hydra.Cluster.Util (chainConfigFor, keysFor)
 import Hydra.Contract.Dummy (dummyMintingScript)
 import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
 import Hydra.HTLC.Data (Redeemer (Claim))
@@ -78,7 +74,6 @@ import Hydra.HTLC.Embed (htlcValidatorScript)
 import Hydra.Invoice qualified as I
 import Hydra.Logging (Tracer, showLogsOnFailure)
 import Hydra.Tx ()
-import Hydra.Tx.ContestationPeriod qualified as CP
 import HydraNode
   ( getProtocolParameters,
     getSnapshotUTxO,
@@ -87,16 +82,15 @@ import HydraNode
     send,
     waitFor,
     waitMatch,
-    withHydraNode,
     withConnectionToNode,
   )
 import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
 import Network.HTTP.Req qualified as Req
 import PlutusTx.Builtins (toBuiltin)
-import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe, withTempDir)
+import Test.Hydra.Prelude (around, describe, hspec, it, shouldBe)
 import Test.QuickCheck (Gen, arbitrary, generate, suchThat)
 import Hydra.Node.Util (readFileTextEnvelopeThrow)
-import Hydra.Chain.Direct (DirectBackend(..))
+import Hydra.Chain.Direct (DirectBackend(DirectBackend))
 
 instance C.HasTypeProxy BS.ByteString where
   data AsType BS.ByteString = AsByteString
@@ -109,11 +103,8 @@ instance C.SerialiseAsRawBytes BS.ByteString where
 aliceBobIdaTransferAcrossHeads ::
   Tracer IO EndToEndLog ->
   DirectBackend ->
-  [C.TxId] ->
   IO ()
-aliceBobIdaTransferAcrossHeads tracer backend hydraScriptsTxId = do
-      let contestationPeriod :: CP.ContestationPeriod = 100
-
+aliceBobIdaTransferAcrossHeads tracer backend = do
       let hydraTracer = contramap FromHydraNode tracer
 
       blockTime <- Backend.getBlockTime backend
@@ -511,5 +502,5 @@ main = hspec $ around (showLogsOnFailure "spec") $ do
   describe "HTLC" $ do
     it "hydra lightning router" $ \tracer -> do
       let backend = DirectBackend $ DirectOptions { networkId = C.Testnet $ C.NetworkMagic 42, nodeSocket = "devnet/node.socket" }
-      x <- Faucet.publishHydraScriptsAs backend Faucet
-      aliceBobIdaTransferAcrossHeads tracer backend x
+      _ <- Faucet.publishHydraScriptsAs backend Faucet
+      aliceBobIdaTransferAcrossHeads tracer backend 
