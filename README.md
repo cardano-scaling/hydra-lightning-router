@@ -42,7 +42,7 @@ nix run .#demo
 
 cabal test hydra-lightning-router-e2e --test-options='--match="hydra lightning router"'
 # or 
-cabal test hydra-lightning-router-e2e --test-options='--match="can refund after accidental closing"'
+cabal test hydra-lightning-router-e2e --test-options='--match="can refund from HTLC after timelock"'
 ```
 
 ## Tests
