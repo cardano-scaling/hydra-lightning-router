@@ -1,70 +1,33 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Hydra.Lightning.ScenarioSpec (spec) where
 
 import Cardano.Api qualified as C
 import Cardano.Api.UTxO qualified as C
 import Cardano.Api.UTxO qualified as UTxO
-import Cardano.Ledger.BaseTypes qualified as Ledger
-import Cardano.Ledger.Credential qualified as Ledger
-import Cardano.Ledger.Plutus.Language (Language (PlutusV3))
-import CardanoClient (QueryPoint (QueryTip))
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently)
-import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO, writeTVar)
-import Control.Lens (contramap, (&), (^..), (^?))
+import Control.Concurrent.STM.TVar (newTVarIO, writeTVar)
+import Control.Lens (contramap, (^..), (^?))
 import Control.Monad (guard)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Lens (key, values, _JSON)
-import Data.Bifunctor (second)
-import Data.ByteString qualified as BS
-import Data.Functor ((<&>))
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 import Data.Set qualified as Set
-import Data.Time (UTCTime, addUTCTime, diffUTCTime)
+import Data.Time (diffUTCTime)
 import Data.Time.Clock.POSIX (getCurrentTime)
-import GHC.Conc (TVar, atomically)
-import GHC.IsList (toList)
-import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx), TransactionSubmitted)
+import GHC.Conc (atomically)
+import Hydra.API.HTTPServer (DraftCommitTxResponse (DraftCommitTxResponse, commitTx))
 import Hydra.Cardano.Api
-  ( AddressInEra,
-    Era,
-    LedgerEra,
-    PParams,
-    SlotNo,
-    Tx,
-    TxOut,
-    UTxO,
-    balancedTxBody,
-    defaultTxBodyContent,
-    fromLedgerTx,
-    fromLedgerTxOut,
-    isScriptTxOut,
+  ( Tx,
     mkScriptAddress,
-    mkScriptDatum,
-    mkTxOutDatumInline,
     mkVkAddress,
-    scriptWitnessInCtx,
     signTx,
-    toLedgerTx,
-    toScriptData,
-    txOutReferenceScript,
-    txOutValue,
-    utxoFromTx,
-    pattern ByronAddressInEra,
     pattern PlutusScript,
-    pattern PlutusScriptWitness,
-    pattern ShelleyAddress,
-    pattern ShelleyAddressInEra,
-    pattern Tx,
     pattern TxOut,
   )
-import Hydra.Cardano.Api.Pretty (renderTxWithUTxO)
 import Hydra.Chain.Backend qualified as Backend
 import Hydra.Chain.Direct (DirectBackend (DirectBackend))
 import Hydra.Cluster.Faucet (seedFromFaucet, seedFromFaucetWithMinting)
@@ -75,18 +38,32 @@ import Hydra.Cluster.Fixture
 import Hydra.Cluster.Scenarios
   ( EndToEndLog (FromFaucet, FromHydraNode),
     headIsInitializingWith,
-    recomputeIntegrityHash,
   )
 import Hydra.Contract.Dummy (dummyMintingScript)
-import Hydra.HTLC.Conversions (standardInvoiceToHTLCDatum)
-import Hydra.HTLC.Data (Redeemer (Claim, Refund))
 import Hydra.HTLC.Embed (htlcValidatorScript)
 import Hydra.Invoice qualified as I
-import Hydra.Ledger.Cardano.Evaluate (maxTxExecutionUnits)
+import Hydra.Lightning.Helper
+  ( alice,
+    aliceWalletSk,
+    aliceWalletVk,
+    bob,
+    bobWalletSk,
+    bobWalletVk,
+    buildClaimTX,
+    buildLockTx,
+    buildRefundTx,
+    carol,
+    carolWalletSk,
+    carolWalletVk,
+    genFungibleAsset,
+    generateInvoice,
+    generateInvoiceWithTime,
+    vkAddress,
+    waitLockInHead,
+    waitToReceiveFunds,
+  )
 import Hydra.Logging (Tracer, showLogsOnFailure)
-import Hydra.Node.Util (readFileTextEnvelopeThrow)
 import Hydra.Options (DirectOptions (DirectOptions, networkId, nodeSocket))
-import Hydra.Tx (Party (Party, vkey))
 import HydraNode
   ( getProtocolParameters,
     getSnapshotUTxO,
@@ -99,10 +76,8 @@ import HydraNode
   )
 import Network.HTTP.Req (POST (POST), defaultHttpConfig, http, port, req, responseBody, runReq, (/:))
 import Network.HTTP.Req qualified as Req
-import PlutusTx.Builtins (toBuiltin)
-import System.IO.Unsafe (unsafePerformIO)
 import Test.Hydra.Prelude (Spec, around, describe, it, shouldBe)
-import Test.QuickCheck (Gen, arbitrary, generate, suchThat)
+import Test.QuickCheck (generate)
 
 spec :: Spec
 spec = around (showLogsOnFailure "spec") $ do
@@ -111,50 +86,9 @@ spec = around (showLogsOnFailure "spec") $ do
     it "hydra lightning router" $ \tracer -> do
       _ <- Faucet.publishHydraScriptsAs backend Faucet
       aliceBobIdaTransferAcrossHeads tracer backend
-    it "can refund after accidental closing" $ \tracer -> do
+    it "can refund from HTLC after timelock" $ \tracer -> do
       _ <- Faucet.publishHydraScriptsAs backend Faucet
-      closeAfterLockAndRefund tracer backend
-
-instance C.HasTypeProxy BS.ByteString where
-  data AsType BS.ByteString = AsByteString
-  proxyToAsType _ = AsByteString
-
-instance C.SerialiseAsRawBytes BS.ByteString where
-  serialiseToRawBytes = id
-  deserialiseFromRawBytes AsByteString = pure
-
-alice :: Party
-alice = Party {vkey = "b37aabd81024c043f53a069c91e51a5b52e4ea399ae17ee1fe3cb9c44db707eb"}
-
-bob :: Party
-bob = Party {vkey = "f68e5624f885d521d2f43c3959a0de70496d5464bd3171aba8248f50d5d72b41"}
-
-carol :: Party
-carol = Party {vkey = "7abcda7de6d883e7570118c1ccc8ee2e911f2e628a41ab0685ffee15f39bba96"}
-
-aliceWalletSk :: C.SigningKey C.PaymentKey
-aliceWalletSk = unsafePerformIO $ readFileTextEnvelopeThrow "./../devnet/credentials/alice.sk"
-{-# NOINLINE aliceWalletSk #-}
-
-bobWalletSk :: C.SigningKey C.PaymentKey
-bobWalletSk = unsafePerformIO $ readFileTextEnvelopeThrow "./../devnet/credentials/bob.sk"
-{-# NOINLINE bobWalletSk #-}
-
-carolWalletSk :: C.SigningKey C.PaymentKey
-carolWalletSk = unsafePerformIO $ readFileTextEnvelopeThrow "./../devnet/credentials/carol.sk"
-{-# NOINLINE carolWalletSk #-}
-
-aliceWalletVk :: C.VerificationKey C.PaymentKey
-aliceWalletVk = unsafePerformIO $ readFileTextEnvelopeThrow "./../devnet/credentials/alice.vk"
-{-# NOINLINE aliceWalletVk #-}
-
-bobWalletVk :: C.VerificationKey C.PaymentKey
-bobWalletVk = unsafePerformIO $ readFileTextEnvelopeThrow "./../devnet/credentials/bob.vk"
-{-# NOINLINE bobWalletVk #-}
-
-carolWalletVk :: C.VerificationKey C.PaymentKey
-carolWalletVk = unsafePerformIO $ readFileTextEnvelopeThrow "./../devnet/credentials/carol.vk"
-{-# NOINLINE carolWalletVk #-}
+      refundFromHTLC tracer backend
 
 aliceBobIdaTransferAcrossHeads ::
   Tracer IO EndToEndLog ->
@@ -378,11 +312,11 @@ aliceBobIdaTransferAcrossHeads tracer backend = do
   _ <- concurrently head1 head2
   pure ()
 
-closeAfterLockAndRefund ::
+refundFromHTLC ::
   Tracer IO EndToEndLog ->
   DirectBackend ->
   IO ()
-closeAfterLockAndRefund tracer backend = do
+refundFromHTLC tracer backend = do
   let hydraTracer = contramap FromHydraNode tracer
 
   blockTime <- Backend.getBlockTime backend
@@ -395,7 +329,8 @@ closeAfterLockAndRefund tracer backend = do
   let tokenAssets = C.valueToPolicyAssets totalTokenValue
   let assetsToValue = foldMap ((mempty <>) . uncurry C.policyAssetsToValue) . Map.toList
   let tokenAssetValue = assetsToValue tokenAssets
-  let lockedVal = C.lovelaceToValue 5_000_000 <> tokenAssetValue
+  let lockedLovelace :: C.Lovelace = 5_000_000
+  let lockedVal = C.lovelaceToValue lockedLovelace <> tokenAssetValue
   utxoToCommitAlice <-
     seedFromFaucetWithMinting
       backend
@@ -475,7 +410,7 @@ closeAfterLockAndRefund tracer backend = do
             guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
           -- NOTIFY Head2 to also close and then try to refund
-          atomically $ writeTVar head1Var (Just (invoice, UTxO.filter (isScriptTxOut htlcValidatorScript) (utxoFromTx lockTx)))
+          atomically $ writeTVar head1Var (Just ())
 
   let head2 = withConnectionToNode hydraTracer 3 $ \n3 ->
         withConnectionToNode hydraTracer 4 $ \_ -> do
@@ -514,16 +449,7 @@ closeAfterLockAndRefund tracer backend = do
           headUTxO `shouldBe` Just (Aeson.toJSON $ bobUTxO <> carolUTxO)
 
           -- WAITING for Head 1 to close after locking the funds in HTLC script
-          (invoice, htlcUTxO) <- waitLockInHead head1Var
-
-          pparams <- getProtocolParameters n3
-          let sender = vkAddress networkId aliceWalletVk
-          let recipient = mkVkAddress networkId carolWalletVk
-          let changeAddress = mkVkAddress networkId carolWalletVk
-
-          refundTx <- buildRefundTx backend pparams invoice htlcUTxO sender recipient changeAddress lockedVal
-          let signedL1tx = signTx carolWalletSk refundTx
-          putStrLn $ renderTxWithUTxO htlcUTxO signedL1tx
+          _ <- waitLockInHead head1Var
 
           send n3 $ input "Close" []
           deadline <- waitMatch (20 * blockTime) n3 $ \v -> do
@@ -539,271 +465,30 @@ closeAfterLockAndRefund tracer backend = do
           waitMatch (20 * blockTime) n3 $ \v ->
             guard $ v ^? key "tag" == Just "HeadIsFinalized"
 
-          response <-
-            runReq defaultHttpConfig $
-              req
-                POST
-                (http "127.0.0.1" /: "cardano-transaction")
-                (Req.ReqBodyJson signedL1tx)
-                (Proxy :: Proxy (Req.JsonResponse TransactionSubmitted))
-                (port $ 4000 + 4)
+          pure ()
 
-          let submitted = responseBody response
-          print submitted
-          pure signedL1tx
-
-  -- Run two heads in parallel
+  -- Run two heads in parallel until they close/fanout
   _ <- concurrently head1 head2
 
-  pure ()
+  let htlcAddress = C.makeShelleyAddress networkId (C.PaymentCredentialByScript $ C.hashScript $ PlutusScript htlcValidatorScript) C.NoStakeAddress
+  htlcUTxO <- Backend.queryUTxO backend [htlcAddress]
+  aliceL1UTxO <- Backend.queryUTxO backend [vkAddress networkId aliceWalletVk]
+  let aliceBeforeRefund = UTxO.totalLovelace aliceL1UTxO
+  let changeAddress = mkVkAddress networkId aliceWalletVk
 
-waitLockInHead :: TVar (Maybe b) -> IO b
-waitLockInHead var = do
-  lockDatum <- readTVarIO var
-  case lockDatum of
-    Nothing -> threadDelay 1 >> waitLockInHead var
-    Just d -> pure d
+  -- Alice was locking funds into HTLC but now is also a recipient of a refund
+  let recipient = C.shelleyAddressInEra C.ShelleyBasedEraConway (vkAddress networkId aliceWalletVk)
+  refundTx <- buildRefundTx backend htlcUTxO recipient changeAddress lockedVal aliceL1UTxO
+  let signedL1tx = signTx aliceWalletSk refundTx
+  let expectedTxId = C.getTxId $ C.getTxBody signedL1tx
+  let C.TxFeeExplicit _ fee = C.txFee $ C.getTxBodyContent $ C.getTxBody signedL1tx
+  -- SUBMIT L1 refund tx
+  Backend.submitTransaction backend signedL1tx
+  putStrLn "Waiting on funds..."
+  aliceL1UTxO' <- waitToReceiveFunds backend networkId aliceWalletVk expectedTxId
+  let aliceAfterRefund = UTxO.totalLovelace aliceL1UTxO'
 
-vkAddress :: C.NetworkId -> C.VerificationKey C.PaymentKey -> C.Address C.ShelleyAddr
-vkAddress networkId vk =
-  C.makeShelleyAddress networkId (C.PaymentCredentialByKey $ C.verificationKeyHash vk) C.NoStakeAddress
-
-generateInvoice :: C.Address C.ShelleyAddr -> C.Value -> IO (I.StandardInvoice, I.PreImage)
-generateInvoice recipient value = do
-  date <- addUTCTime (60 * 60 * 24 * 30) <$> getCurrentTime
-  (invoice, preImage) <- I.generateStandardInvoice recipient value date
-  pure (invoice, preImage)
-
-generateInvoiceWithTime :: UTCTime -> C.Address C.ShelleyAddr -> C.Value -> IO (I.StandardInvoice, I.PreImage)
-generateInvoiceWithTime now recipient value = do
-  (invoice, preImage) <- I.generateStandardInvoice recipient value now
-  pure (invoice, preImage)
-
-buildRefundTx ::
-  DirectBackend ->
-  PParams LedgerEra ->
-  I.StandardInvoice ->
-  UTxO.UTxO Era ->
-  C.Address C.ShelleyAddr ->
-  AddressInEra ->
-  AddressInEra ->
-  C.Value ->
-  IO Tx
-buildRefundTx backend pparams invoice utxo sender recipient changeAddress val = do
-  -- let scriptAddress = mkScriptAddress networkId htlcValidatorScript
-  case standardInvoiceToHTLCDatum invoice sender of
-    Nothing -> error "Failed to generate Datum for Invoice"
-    Just dat -> do
-      let carolsOutput =
-            TxOut
-              recipient
-              val
-              (mkTxOutDatumInline dat)
-              C.ReferenceScriptNone
-
-      systemStart <- Backend.querySystemStart backend QueryTip
-      eraHistory <- Backend.queryEraHistory backend QueryTip
-      stakePools <- Backend.queryStakePools backend QueryTip
-      let scriptWitness =
-            C.BuildTxWith $
-              C.ScriptWitness scriptWitnessInCtx $
-                PlutusScriptWitness
-                  htlcValidatorScript
-                  (mkScriptDatum dat)
-                  (toScriptData Refund)
-                  maxTxExecutionUnits
-      tip <- Backend.queryTip backend
-      let currentSlot = case C.chainPointToSlotNo tip of
-            Nothing -> error "Failed to convert ChainPoint to SlotNo"
-            Just s -> s
-      let upperSlot :: SlotNo = currentSlot
-      let bodyContent =
-            defaultTxBodyContent
-              & C.addTxIns (map (,scriptWitness) (Set.toList $ C.inputSet utxo))
-              & C.addTxOuts [carolsOutput]
-              & C.setTxAuxScripts (C.TxAuxScripts C.AllegraEraOnwardsConway [C.ScriptInEra C.PlutusScriptV3InConway (PlutusScript htlcValidatorScript)])
-              & C.setTxValidityLowerBound (C.TxValidityLowerBound C.AllegraEraOnwardsConway upperSlot)
-              & C.setTxExtraKeyWits (C.TxExtraKeyWitnesses C.AlonzoEraOnwardsConway [C.verificationKeyHash aliceWalletVk])
-
-      case C.makeTransactionBodyAutoBalance
-        C.shelleyBasedEra
-        systemStart
-        (C.toLedgerEpochInfo eraHistory)
-        (C.LedgerProtocolParameters pparams)
-        stakePools
-        mempty
-        mempty
-        utxo
-        bodyContent
-        changeAddress
-        Nothing of
-        Left e -> error $ show e
-        Right tx -> pure $ flip Tx [] $ balancedTxBody tx
-
-buildLockTx ::
-  DirectBackend ->
-  PParams LedgerEra ->
-  C.NetworkId ->
-  I.StandardInvoice ->
-  UTxO.UTxO Era ->
-  C.Address C.ShelleyAddr ->
-  AddressInEra ->
-  C.Value ->
-  IO Tx
-buildLockTx backend pparams networkId invoice utxo sender changeAddress val = do
-  let scriptAddress = mkScriptAddress networkId htlcValidatorScript
-  case standardInvoiceToHTLCDatum invoice sender of
-    Nothing -> error "Failed to generate Datum for Invoice"
-    Just dat -> do
-      let scriptOutput =
-            TxOut
-              scriptAddress
-              val
-              (mkTxOutDatumInline dat)
-              C.ReferenceScriptNone
-
-      systemStart <- Backend.querySystemStart backend QueryTip
-      eraHistory <- Backend.queryEraHistory backend QueryTip
-      stakePools <- Backend.queryStakePools backend QueryTip
-
-      let bodyContent =
-            defaultTxBodyContent
-              & C.addTxIns (map (,C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending) (Set.toList $ C.inputSet utxo))
-              & C.addTxOuts [scriptOutput]
-
-      case C.makeTransactionBodyAutoBalance
-        C.shelleyBasedEra
-        systemStart
-        (C.toLedgerEpochInfo eraHistory)
-        (C.LedgerProtocolParameters pparams)
-        stakePools
-        mempty
-        mempty
-        utxo
-        bodyContent
-        changeAddress
-        Nothing of
-        Left e -> error $ show e
-        Right tx -> pure $ flip Tx [] $ balancedTxBody tx
-
-buildClaimTX ::
-  DirectBackend ->
-  PParams LedgerEra ->
-  I.PreImage ->
-  AddressInEra ->
-  [C.Hash C.PaymentKey] ->
-  C.Value ->
-  UTxO.UTxO Era ->
-  UTxO.UTxO Era ->
-  C.TxIn ->
-  C.AddressInEra Era ->
-  IO (C.Tx Era)
-buildClaimTX backend pparams preImage recipient expectedKeyHashes val claimUTxO collateralUTxO collateral changeAddress = do
-  let maxTxExecutionUnits' =
-        C.ExecutionUnits
-          { C.executionMemory = 0,
-            C.executionSteps = 0
-          }
-
-  let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage preImage
-
-  let scriptWitness =
-        C.BuildTxWith $
-          C.ScriptWitness C.scriptWitnessInCtx $
-            PlutusScriptWitness
-              htlcValidatorScript
-              (C.ScriptDatumForTxIn Nothing)
-              (toScriptData (Claim secret))
-              maxTxExecutionUnits'
-
-  let txIn = head $ Set.toList $ C.inputSet claimUTxO
-
-  C.ChainPoint tip _ <- Backend.queryTip backend
-
-  let body =
-        defaultTxBodyContent
-          & C.addTxIns [(txIn, scriptWitness), (collateral, C.BuildTxWith $ C.KeyWitness C.KeyWitnessForSpending)]
-          & C.addTxInsCollateral [collateral]
-          & C.addTxOuts [TxOut recipient val C.TxOutDatumNone C.ReferenceScriptNone]
-          & C.setTxExtraKeyWits (C.TxExtraKeyWitnesses C.AlonzoEraOnwardsConway expectedKeyHashes)
-          & C.setTxValidityLowerBound (C.TxValidityLowerBound C.AllegraEraOnwardsConway tip)
-          & C.setTxValidityUpperBound (C.TxValidityUpperBound C.ShelleyBasedEraConway $ Just $ tip + 5000)
-
-  systemStart <- Backend.querySystemStart backend CardanoClient.QueryTip
-  eraHistory <- Backend.queryEraHistory backend CardanoClient.QueryTip
-  stakePools <- Backend.queryStakePools backend CardanoClient.QueryTip
-
-  let eBody =
-        second (flip Tx [] . balancedTxBody) $
-          C.makeTransactionBodyAutoBalance
-            C.shelleyBasedEra
-            systemStart
-            (C.toLedgerEpochInfo eraHistory)
-            (C.LedgerProtocolParameters pparams)
-            stakePools
-            mempty
-            mempty
-            (claimUTxO <> collateralUTxO)
-            body
-            changeAddress
-            Nothing
-  case eBody of
-    Left e -> error $ show e
-    Right tx ->
-      pure $ fromLedgerTx @Era $ recomputeIntegrityHash pparams [PlutusV3] (toLedgerTx tx)
-
--- ASSET GENERATION
-genFungibleAsset :: C.Quantity -> Maybe C.PolicyId -> Gen UTxO
-genFungibleAsset quantity pid =
-  UTxO.singleton <$> arbitrary <*> genTxOutWithAssets quantity pid
-
-genTxOutWithAssets :: C.Quantity -> Maybe C.PolicyId -> Gen (TxOut ctx)
-genTxOutWithAssets q pid =
-  ((fromLedgerTxOut <$> arbitrary) `suchThat` notByronAddress)
-    <&> singleAsset q . noNegativeAssetsWithPotentialPolicy pid . noRefScripts . noStakeRefPtr
-
-singleAsset :: C.Quantity -> TxOut ctx -> TxOut ctx
-singleAsset wantedQuantity (TxOut addr val dat refScript) =
-  let (pid, C.PolicyAssets assets) = head $ Map.assocs $ C.valueToPolicyAssets val
-      (name, _) = head $ Map.assocs assets
-      singleEntry = Map.singleton name wantedQuantity
-      newVal = C.policyAssetsToValue pid (C.PolicyAssets singleEntry)
-   in TxOut addr newVal dat refScript
-
-noStakeRefPtr :: TxOut ctx -> TxOut ctx
-noStakeRefPtr out@(TxOut addr val dat refScript) = case addr of
-  ShelleyAddressInEra (ShelleyAddress _ cre sr) ->
-    case sr of
-      Ledger.StakeRefPtr _ ->
-        TxOut (ShelleyAddressInEra (ShelleyAddress Ledger.Testnet cre Ledger.StakeRefNull)) val dat refScript
-      _ ->
-        TxOut (ShelleyAddressInEra (ShelleyAddress Ledger.Testnet cre sr)) val dat refScript
-  _ -> out
-
-notByronAddress :: TxOut ctx -> Bool
-notByronAddress (C.TxOut addr _ _ _) = case addr of
-  ByronAddressInEra {} -> False
-  _ -> True
-
-noRefScripts :: TxOut ctx -> TxOut ctx
-noRefScripts out =
-  out {txOutReferenceScript = C.ReferenceScriptNone}
-
-noNegativeAssetsWithPotentialPolicy :: Maybe C.PolicyId -> TxOut ctx -> TxOut ctx
-noNegativeAssetsWithPotentialPolicy mpid out =
-  let val = txOutValue out
-      nonAdaAssets =
-        Map.foldrWithKey
-          (\pid policyAssets def -> C.policyAssetsToValue (fromMaybe pid mpid) policyAssets <> def)
-          mempty
-          (filterNegativeVals (C.valueToPolicyAssets val))
-      ada = C.selectLovelace val
-   in out {txOutValue = C.lovelaceToValue ada <> nonAdaAssets}
-  where
-    filterNegativeVals =
-      Map.filterWithKey
-        ( \pid passets ->
-            all
-              (\(_, C.Quantity n) -> n > 0)
-              (toList $ C.policyAssetsToValue pid passets)
-        )
+  -- ALICE should have whatever she had before refund + the value locked in HTLC contract and minus the fees she paid for refund tx.
+  if aliceAfterRefund == aliceBeforeRefund + lockedLovelace - fee
+    then pure ()
+    else error "Refund not detected"
