@@ -31,12 +31,18 @@ demonstrates:
 
 ## Running
 
+Because of the nature of our tests we can't run multiple tests without re-spinning the devnet. 
+
 ```
 # In one terminal
 nix run .#demo
 
-# In another
-cabal run hydra-lightning-router
+# wait to see prepare-devnet and seed-devnet jobs as completed
+# In another terminal
+
+cabal test hydra-lightning-router-e2e --test-options='--match="hydra lightning router"'
+# or 
+cabal test hydra-lightning-router-e2e --test-options='--match="can refund from HTLC after timelock"'
 ```
 
 ## Tests
