@@ -8,12 +8,13 @@ where
 
 import Cardano.Api qualified as C
 import Cardano.Api.HasTypeProxy
+import Control.Exception (SomeException (SomeException))
 import Convex.BuildTx (execBuildTx, mintPlutus)
 import Convex.Class (MonadMockchain, setSlot)
 import Convex.CoinSelection (BalanceTxError, ChangeOutputPosition (TrailingChange))
 import Convex.MockChain.CoinSelection qualified as CoinSelection
 import Convex.MockChain.Defaults qualified as Defaults
-import Convex.MockChain.Utils (mockchainSucceeds)
+import Convex.MockChain.Utils (mockchainFails, mockchainSucceeds)
 import Convex.Utils (failOnError, inBabbage, utcTimeToSlot)
 import Convex.Wallet qualified as Wallet
 import Convex.Wallet.MockWallet qualified as Wallet
@@ -139,7 +140,6 @@ canClaimNativeTokenFromHTLCScript = do
   let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
   mockchainSucceeds $ failOnError $ do
     balanceAndMintNativeAsset Wallet.w1
-    C.liftIO $ print $ I.amount invoice
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
     balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
 
@@ -158,6 +158,29 @@ canRefundFromHTLCScript = do
     ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
     balanceAndRefundHTLC Wallet.w1 ref dat lb pkh
 
+canRecoverFundsAfterExpiry :: Assertion
+canRecoverFundsAfterExpiry = do
+  let sender = Wallet.address Defaults.networkId Wallet.w1
+  let recipient = Wallet.address Defaults.networkId Wallet.w2
+  -- Note: Date in the past.
+  let date = UTCTime (fromGregorian 2021 01 01) (secondsToDiffTime 0)
+  (invoice, k) <- I.generateStandardInvoice recipient (C.lovelaceToValue 1_000_000) date
+  let Just dat = standardInvoiceToHTLCDatum invoice sender
+  let Just pkh = shelleyPayAddrToPaymentKey recipient
+  let sn = 0
+  let ub = C.TxValidityUpperBound C.shelleyBasedEra $ Just sn -- Slot number in the past.
+  let lb = C.TxValidityLowerBound C.allegraBasedEra sn
+  let secret = toBuiltin $ C.serialiseToRawBytes $ I.fromPreImage k
+  -- Check we can't claim after the time has passed.
+  flip mockchainFails (\(SomeException _) -> pure ()) $ failOnError $ do
+    ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
+    balanceAndClaimHTLC Wallet.w2 ref dat ub pkh secret
+  -- Claim our funds back.
+  mockchainSucceeds $ failOnError $ do
+    ref <- balanceAndPayHTLC Wallet.w1 dat (I.amount invoice)
+    let Just kh = shelleyPayAddrToPaymentKey sender
+    balanceAndRefundHTLC Wallet.w1 ref dat lb kh
+
 tests :: TestTree
 tests =
   testGroup
@@ -167,7 +190,8 @@ tests =
         [ testCase "can spend to htlc script" canSpendToHTLCScript,
           testCase "can claim script output from htlc script" canClaimFromHTLCScript,
           testCase "can refund script output from htlc script" canRefundFromHTLCScript,
-          testCase "can claim native token from htlc script" canClaimNativeTokenFromHTLCScript
+          testCase "can claim native token from htlc script" canClaimNativeTokenFromHTLCScript,
+          testCase "can recover funds after expiry" canRecoverFundsAfterExpiry
         ]
     ]
 
